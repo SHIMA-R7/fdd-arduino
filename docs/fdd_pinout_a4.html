@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>FDDケーブル ピンアサイン</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --sub: #555;
+    --line: #999;
+    --faint: #e6e6e6;
+    --out: #1f5fa8;   /* Nano → FDD */
+    --in: #b0561a;    /* FDD → Nano */
+    --red: #c62828;
+  }
+  @page { size: A4 portrait; margin: 9mm 10mm; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #fff; color: var(--ink); }
+  body {
+    width: 190mm;
+    margin: 0 auto;
+    font-family: "Meiryo", "Yu Gothic", sans-serif;
+    font-size: 9.5pt;
+    line-height: 1.35;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  h1 { font-size: 15pt; margin: 0; letter-spacing: .02em; }
+  .subtitle { color: var(--sub); font-size: 8.5pt; margin: 1mm 0 3mm; }
+  h2 {
+    font-size: 10.5pt; margin: 2.5mm 0 1.2mm; padding-bottom: .6mm;
+    border-bottom: 1.2px solid var(--ink);
+  }
+  .num { font-family: "Consolas", "Cascadia Mono", monospace; }
+  svg text { font-family: "Meiryo", sans-serif; }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid var(--line); padding: 1.1mm 1.6mm; vertical-align: middle; }
+  th { background: #f2f2f2; font-size: 8.5pt; font-weight: 600; text-align: center; }
+  .pins td { height: 5.5mm; padding-top: .5mm; padding-bottom: .5mm; white-space: nowrap; }
+  .pins .gnd { color: var(--sub); text-align: center; background: #fafafa; }
+  .pins .wire { text-align: center; font-weight: 700; font-size: 11pt; }
+  .pins .sig { font-family: "Consolas", monospace; font-weight: 700; }
+  .pins .desc { font-size: 8.5pt; }
+  .pins .dir { text-align: center; font-weight: 700; white-space: nowrap; font-size: 8.5pt; }
+  .pins .nano { text-align: center; font-weight: 700; font-size: 11.5pt; font-family: "Consolas", monospace; }
+  .pins .chk { width: 8mm; }
+  .pins tr.unused td:not(.gnd) { color: #999; }
+  .pins tr.key td.nano { outline: 2px solid var(--ink); outline-offset: -3px; }
+  .o { color: var(--out); }
+  .i { color: var(--in); }
+  .note { font-size: 8pt; color: var(--sub); }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
+  .box { border: 1px solid var(--line); border-radius: 1.5mm; padding: 2mm 2.5mm; }
+  .box h3 { font-size: 9.5pt; margin: 0 0 1mm; }
+  .box ul { margin: 0; padding-left: 4.5mm; }
+  .box li { margin: .4mm 0; }
+  .legend span { margin-right: 4mm; }
+  .footer { margin-top: 2mm; font-size: 7.5pt; color: var(--sub); text-align: right; }
+</style>
+</head>
+<body>
+
+<h1>34ピン FDDケーブル → Arduino Nano ピンアサイン</h1>
+<div class="subtitle">
+  ArduinoFDC（github.com/dhansel/ArduinoFDC）と同じ配線／テスト用スケッチ fdd_test.ino も同じ配線。
+  信号はすべて <b>アクティブLOW</b>。<b>奇数番の線はすべてGND</b>。
+</div>
+
+<h2>① どこを切るか</h2>
+<svg viewBox="0 0 760 132" width="100%" style="display:block">
+  <!-- ribbon -->
+  <rect x="96" y="52" width="250" height="26" fill="#f4f4f4" stroke="#777"/>
+  <rect x="96" y="52" width="250" height="3.5" fill="#c62828"/>
+  <rect x="400" y="52" width="150" height="26" fill="#f4f4f4" stroke="#777"/>
+  <rect x="400" y="52" width="150" height="3.5" fill="#c62828"/>
+  <!-- twist section -->
+  <path d="M550 52 L585 52 L625 78 L660 78 L660 52 L625 52 L585 78 L550 78 Z" fill="#f4f4f4" stroke="#777"/>
+  <rect x="550" y="52" width="110" height="3.5" fill="#c62828"/>
+  <rect x="660" y="52" width="30" height="26" fill="#f4f4f4" stroke="#777"/>
+  <rect x="660" y="52" width="30" height="3.5" fill="#c62828"/>
+  <!-- MB connector (to be cut) -->
+  <rect x="20" y="44" width="54" height="42" rx="3" fill="#fff" stroke="#999" stroke-dasharray="4 3"/>
+  <line x1="74" y1="65" x2="96" y2="65" stroke="#777" stroke-dasharray="3 3"/>
+  <text x="47" y="102" text-anchor="middle" font-size="11" fill="#777">M/B側</text>
+  <text x="47" y="116" text-anchor="middle" font-size="11" fill="#777">（切り落とす）</text>
+  <!-- cut mark -->
+  <line x1="112" y1="30" x2="112" y2="98" stroke="#c62828" stroke-width="2.5" stroke-dasharray="6 4"/>
+  <text x="112" y="22" text-anchor="middle" font-size="13" font-weight="700" fill="#c62828">✂ ここで切る</text>
+  <text x="120" y="112" font-size="11" fill="#1a1a1a">切り口 → Arduino へ（線番 = 下表の番号）</text>
+  <!-- middle connector -->
+  <rect x="346" y="40" width="54" height="50" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="373" y="69" text-anchor="middle" font-size="11" fill="#555">B</text>
+  <text x="373" y="32" text-anchor="middle" font-size="11" fill="#555">中間コネクタ</text>
+  <text x="373" y="108" text-anchor="middle" font-size="10.5" fill="#777">使わない</text>
+  <!-- twist label -->
+  <text x="605" y="32" text-anchor="middle" font-size="11" fill="#1a1a1a">ねじれ（10〜16番線）</text>
+  <!-- end connector -->
+  <rect x="690" y="36" width="58" height="58" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="2.5"/>
+  <text x="719" y="70" text-anchor="middle" font-size="15" font-weight="700">A</text>
+  <text x="748" y="112" text-anchor="end" font-size="11" font-weight="700">ここにFDDを挿す</text>
+  <text x="748" y="126" text-anchor="end" font-size="10" fill="#555">（PCと同じ使い方）</text>
+  <!-- red stripe label -->
+  <text x="230" y="46" text-anchor="middle" font-size="10.5" fill="#c62828">赤線 = 1番線</text>
+</svg>
+<div class="note" style="margin-top:.5mm">
+  マザーボード側（ねじれから遠い方の端）のコネクタだけを切り落とし、FDDは<b>ねじれの先の端コネクタ</b>に挿します（PCの「Aドライブ」と同じ）。
+  こうすると <b>切り口の線番 = マザーボードのピン番号</b> になり、下の表がそのまま使えます。中間コネクタは使いません。
+</div>
+
+<h2>② 配線表（切り口の線番 → Nano）</h2>
+<div class="legend note" style="margin-bottom:1mm">
+  <span><b class="o">出力 ▶</b>：Nano → FDD</span>
+  <span><b class="i">◀ 入力</b>：FDD → Nano（要プルアップ：Nano内蔵でOK、30番のみ外付け）</span>
+  <span>□：配線したらチェック</span>
+</div>
+<table class="pins">
+  <colgroup>
+    <col style="width:16mm"><col style="width:11mm"><col style="width:22mm"><col><col style="width:17mm"><col style="width:17mm"><col style="width:8mm">
+  </colgroup>
+  <thead>
+    <tr><th>奇数線</th><th>線番</th><th>信号</th><th>機能</th><th>向き</th><th>Nano</th><th>□</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class="gnd num">1 GND</td><td class="wire num">2</td><td class="sig">/DENSEL</td><td class="desc">密度切替（HD/DD）</td><td class="dir o">出力 ▶</td><td class="nano">D13</td><td class="chk"></td></tr>
+    <tr class="unused"><td class="gnd num">3 GND</td><td class="wire num">4</td><td class="sig">—</td><td class="desc">未使用（切ったままでOK）</td><td class="dir">—</td><td class="nano">—</td><td class="chk"></td></tr>
+    <tr class="unused"><td class="gnd num">5 GND</td><td class="wire num">6</td><td class="sig">—</td><td class="desc">未使用（切ったままでOK）</td><td class="dir">—</td><td class="nano">—</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">7 GND</td><td class="wire num">8</td><td class="sig">/INDEX</td><td class="desc">1回転ごとのパルス</td><td class="dir i">◀ 入力</td><td class="nano">D7</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">9 GND</td><td class="wire num">10</td><td class="sig">/MOTEA</td><td class="desc">モーターON（A）</td><td class="dir o">出力 ▶</td><td class="nano">D4</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">11 GND</td><td class="wire num">12</td><td class="sig">/DRVSB</td><td class="desc">ドライブ選択（B）</td><td class="dir o">出力 ▶</td><td class="nano">A1</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">13 GND</td><td class="wire num">14</td><td class="sig">/DRVSA</td><td class="desc">ドライブ選択（A）</td><td class="dir o">出力 ▶</td><td class="nano">D5</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">15 GND</td><td class="wire num">16</td><td class="sig">/MOTEB</td><td class="desc">モーターON（B）</td><td class="dir o">出力 ▶</td><td class="nano">A0</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">17 GND</td><td class="wire num">18</td><td class="sig">/DIR</td><td class="desc">ヘッド移動方向</td><td class="dir o">出力 ▶</td><td class="nano">D3</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">19 GND</td><td class="wire num">20</td><td class="sig">/STEP</td><td class="desc">ヘッド1ステップ</td><td class="dir o">出力 ▶</td><td class="nano">D2</td><td class="chk"></td></tr>
+    <tr class="key"><td class="gnd num">21 GND</td><td class="wire num">22</td><td class="sig">/WDATA</td><td class="desc">書き込みデータ（タイマ出力OC1A固定）</td><td class="dir o">出力 ▶</td><td class="nano">D9</td><td class="chk"></td></tr>
+    <tr class="key"><td class="gnd num">23 GND</td><td class="wire num">24</td><td class="sig">/WGATE</td><td class="desc">書き込み許可</td><td class="dir o">出力 ▶</td><td class="nano">D10</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">25 GND</td><td class="wire num">26</td><td class="sig">/TRK00</td><td class="desc">ヘッドがトラック0にいる</td><td class="dir i">◀ 入力</td><td class="nano">D11</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">27 GND</td><td class="wire num">28</td><td class="sig">/WPT</td><td class="desc">ライトプロテクト</td><td class="dir i">◀ 入力</td><td class="nano">D12</td><td class="chk"></td></tr>
+    <tr class="key"><td class="gnd num">29 GND</td><td class="wire num">30</td><td class="sig">/RDATA</td><td class="desc">読み出しデータ（ICP1固定）<b>＋1kΩで5Vへ</b></td><td class="dir i">◀ 入力</td><td class="nano">D8</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">31 GND</td><td class="wire num">32</td><td class="sig">/SIDE1</td><td class="desc">ヘッド面選択（LOW=裏面）</td><td class="dir o">出力 ▶</td><td class="nano">D6</td><td class="chk"></td></tr>
+    <tr><td class="gnd num">33 GND</td><td class="wire num">34</td><td class="sig">/DSKCHG</td><td class="desc">ディスク交換検出</td><td class="dir i">◀ 入力</td><td class="nano">A2</td><td class="chk"></td></tr>
+  </tbody>
+</table>
+<div class="note" style="margin-top:.8mm">
+  太枠のD8／D9はATmega328Pのタイマ専用ピンなので変更できません。奇数線（GND）はまとめてNanoのGNDへ（最低でも数本、できれば全部）。
+</div>
+
+<div class="grid2" style="margin-top:2mm">
+  <div class="box">
+    <h3>③ 線番の数え方</h3>
+    <svg viewBox="0 0 330 88" width="100%" style="display:block">
+      <!-- ribbon cross-section -->
+      <g>
+        <rect x="6" y="10" width="318" height="16" fill="#f4f4f4" stroke="#777"/>
+        <rect x="6" y="10" width="9.35" height="16" fill="#c62828"/>
+        <g stroke="#bbb">
+          <line x1="15.35" y1="10" x2="15.35" y2="26"/><line x1="24.7" y1="10" x2="24.7" y2="26"/>
+          <line x1="34.05" y1="10" x2="34.05" y2="26"/><line x1="43.4" y1="10" x2="43.4" y2="26"/>
+          <line x1="52.75" y1="10" x2="52.75" y2="26"/><line x1="62.1" y1="10" x2="62.1" y2="26"/>
+          <line x1="71.45" y1="10" x2="71.45" y2="26"/><line x1="80.8" y1="10" x2="80.8" y2="26"/>
+        </g>
+        <text x="10.7" y="40" text-anchor="middle" font-size="10" fill="#c62828" font-weight="700">1</text>
+        <text x="20" y="40" text-anchor="middle" font-size="10">2</text>
+        <text x="29.4" y="40" text-anchor="middle" font-size="10">3</text>
+        <text x="38.7" y="40" text-anchor="middle" font-size="10">4</text>
+        <text x="165" y="40" text-anchor="middle" font-size="10" fill="#555">… 順番に …</text>
+        <text x="319" y="40" text-anchor="end" font-size="10">34</text>
+      </g>
+      <text x="6" y="60" font-size="10.5">赤線（端）が <tspan font-weight="700">1番</tspan>、隣から 2, 3, 4 … 34。</text>
+      <text x="6" y="76" font-size="10.5">切り口側から見ても順番は同じ。<tspan font-weight="700">偶数番 = 信号</tspan>。</text>
+    </svg>
+    <div class="note">切る前に、テスターでM/B側コネクタのピンと線の導通を数本確かめると安心です（コネクタの▼印がピン1）。</div>
+  </div>
+  <div class="box">
+    <h3>④ 電源・注意</h3>
+    <ul>
+      <li>FDD電源（小型4ピン）：<b>赤 = +5V</b>、黒 = GND、黄 = +12V（3.5インチは通常5Vのみ）</li>
+      <li>電源は外部5V（2A程度）推奨。<b>GNDはNanoと必ず共通</b>に。</li>
+      <li><b>30番（RDATA）は1kΩで+5Vへプルアップ</b>（ないと読み出しエラーが出やすい）。</li>
+      <li>ねじれの中（10〜16番）はA/Bが入れ替わるだけなので、端コネクタに挿せば上表どおりで動きます。</li>
+      <li>最初の書き込みは消えてもいいディスクで。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="footer">34-pin Shugart/PC floppy interface — Arduino Nano (ATmega328P) / ArduinoFDC pinout</div>
+
+</body>
+</html>

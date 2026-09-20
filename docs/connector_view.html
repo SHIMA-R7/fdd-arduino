@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="utf-8"><title>34ピンコネクタの向き</title>
+<style>
+  body { margin:0; padding:14px 16px; background:#fff; color:#1a1a1a; font-family:"Meiryo","Yu Gothic",sans-serif; width:900px; }
+  h1 { font-size:17px; margin:0 0 4px; }
+  h2 { font-size:14px; margin:14px 0 6px; padding-bottom:3px; border-bottom:1.5px solid #1a1a1a; }
+  p, li { font-size:12.5px; line-height:1.5; margin:4px 0; }
+  .note { font-size:11.5px; color:#555; }
+  b.red { color:#c62828; }
+  ul { margin:4px 0; padding-left:18px; }
+</style></head>
+<body>
+<h1>34ピンFDDコネクタ ― ケーブル側（メス）の向き</h1>
+<p class="note">奇数ピンはすべてGND。偶数ピンが信号。ケーブルの<b class="red">赤線＝1番</b>。</p>
+
+<h2>① ケーブル側コネクタを「挿し込む面」から見た図</h2>
+<svg viewBox="-50 0 935 210" width="935">
+  <!-- connector body -->
+  <rect x="20" y="30" width="840" height="110" rx="6" fill="#f7f7f7" stroke="#1a1a1a" stroke-width="2"/>
+  <!-- key notch (top center) -->
+  <rect x="426" y="24" width="28" height="14" fill="#fff" stroke="#1a1a1a" stroke-width="2"/>
+  <text x="440" y="18" text-anchor="middle" font-size="11">キー溝</text>
+  <!-- rows -->
+  <g font-size="10" font-family="Consolas,monospace">
+    <!-- odd row (top) -->
+    <g>
+      <text x="14" y="58" text-anchor="end" font-size="11" font-family="Meiryo">奇数</text>
+      <text x="14" y="70" text-anchor="end" font-size="10" font-family="Meiryo" fill="#555">GND</text>
+    </g>
+    <!-- even row (bottom) -->
+    <g>
+      <text x="14" y="112" text-anchor="end" font-size="11" font-family="Meiryo">偶数</text>
+      <text x="14" y="124" text-anchor="end" font-size="10" font-family="Meiryo" fill="#555">信号</text>
+    </g>
+    <script type="application/x-none"></script>
+  </g>
+  <!-- generated pins -->
+  <g id="pins"></g>
+  <!-- stripe indicator -->
+  <rect x="24" y="30" width="10" height="110" fill="#c62828" opacity="0.18"/>
+  <text x="29" y="158" text-anchor="middle" font-size="11" fill="#c62828" font-weight="bold">赤線側</text>
+  <text x="850" y="158" text-anchor="end" font-size="11" fill="#555">反対の端＝33/34番</text>
+  <script><![CDATA[
+    const g = document.getElementById('pins');
+    const sig = {2:'DENSEL',4:'—',6:'—',8:'INDEX',10:'MOTEA',12:'DRVSB',14:'DRVSA',16:'MOTEB',18:'DIR',20:'STEP',22:'WDATA',24:'WGATE',26:'TRK00',28:'WPT',30:'RDATA',32:'SIDE1',34:'DSKCHG'};
+    for (let i=0;i<17;i++){
+      const x = 40 + i*48;
+      const odd = 1+i*2, even = 2+i*2;
+      // odd pin (top row)
+      g.insertAdjacentHTML('beforeend',
+        `<rect x="${x}" y="46" width="30" height="20" fill="#fff" stroke="#888"/>
+         <text x="${x+15}" y="60" text-anchor="middle" font-size="11" font-family="Consolas,monospace" fill="#555">${odd}</text>
+         <rect x="${x}" y="100" width="30" height="20" fill="#fff" stroke="#1a1a1a"/>
+         <text x="${x+15}" y="114" text-anchor="middle" font-size="12" font-weight="bold" font-family="Consolas,monospace">${even}</text>
+         <text x="${x+15}" y="136" text-anchor="middle" font-size="8.5" font-family="Meiryo" fill="#1f5fa8">${sig[even]}</text>`);
+    }
+  ]]></script>
+</svg>
+<p class="note">※ 反対側（はんだ面／ケーブルが出ている側）から見ると、左右が反転します。必ず「挿し込む面」で見てください。</p>
+
+<h2>② 向きが合っているかを確かめる、確実な方法</h2>
+<ul>
+  <li><b>赤線をたどる。</b> 赤線の1本が刺さる穴が1番です。ドライブ基板の「1」の印字と一致していればOK。</li>
+  <li><b>テスターで確かめる（いちばん確実）。</b> ドライブの電源を抜いた状態で、コネクタを挿したまま、<b>ケーブルの奇数線（GND）と、ドライブの金属フレーム（またはFDD電源の黒）</b>のあいだの導通を見ます。すべて導通すれば向きは正しく、導通しなければ180度逆です。</li>
+  <li><b>今回の症状との対応：</b> 逆向きだと、信号線がGND線につながるため、入力がすべてLOWに見え、出力はGNDに短絡します。</li>
+</ul>
+
+<h2>③ 34ピン ヘッダの番号の並び（一般則）</h2>
+<ul>
+  <li>2列×17。片方の列が奇数（1,3,5…33）、もう片方が偶数（2,4,6…34）。</li>
+  <li>リボンケーブルの線は、1番線→1番ピン、2番線→2番ピン…と、<b>隣り合う線が別の列に交互に入ります</b>。</li>
+  <li>ドライブ側の1番ピンの位置は機種で異なります。基板の印字（1、2、33、34のいずれか）で判断してください。</li>
+</ul>
+</body>
+</html>

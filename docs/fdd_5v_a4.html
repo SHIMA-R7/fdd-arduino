@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>ATmega328P FDD配線</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --sub: #555;
+    --line: #999;
+    --out: #1f5fa8;
+    --in: #b0561a;
+    --red: #c62828;
+    --pwr: #2e7d32;
+  }
+  @page { size: A4 portrait; margin: 9mm 10mm; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #fff; color: var(--ink); }
+  body {
+    width: 190mm; margin: 0 auto;
+    font-family: "Meiryo", "Yu Gothic", sans-serif;
+    font-size: 8.8pt; line-height: 1.32;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  h1 { font-size: 14pt; margin: 0; }
+  .subtitle { color: var(--sub); font-size: 8pt; margin: .8mm 0 2mm; }
+  h2 { font-size: 10pt; margin: 2.2mm 0 1.2mm; padding-bottom: .5mm; border-bottom: 1.2px solid var(--ink); }
+  .mono { font-family: "Consolas", monospace; }
+  svg text { font-family: "Meiryo", sans-serif; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid var(--line); padding: .5mm 1.3mm; vertical-align: middle; white-space: nowrap; }
+  th { background: #f2f2f2; font-size: 8pt; font-weight: 600; text-align: center; }
+  .c { text-align: center; }
+  .b { font-weight: 700; }
+  .o { color: var(--out); font-weight: 700; }
+  .i { color: var(--in); font-weight: 700; }
+  .fdd td { height: 5.1mm; }
+  .fdd .dip { font-family: "Consolas", monospace; font-weight: 700; font-size: 10.5pt; text-align: center; }
+  .fdd .wire { font-family: "Consolas", monospace; font-weight: 700; font-size: 10pt; text-align: center; }
+  .fdd .sig { font-family: "Consolas", monospace; font-weight: 700; }
+  .fdd tr.muted td { color: #999; }
+  .fdd .add { font-size: 7.8pt; color: var(--red); font-weight: 700; }
+  .top { display: grid; grid-template-columns: 83mm 1fr; gap: 4mm; align-items: start; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3mm; }
+  .grid2 { display: grid; grid-template-columns: 1.25fr 1fr; gap: 3mm; }
+  .box { border: 1px solid var(--line); border-radius: 1.5mm; padding: 1.6mm 2.2mm; }
+  .box h3 { font-size: 9pt; margin: 0 0 .8mm; }
+  .box ul, .box ol { margin: 0; padding-left: 4.2mm; }
+  .box li { margin: .25mm 0; }
+  .small { font-size: 7.8pt; }
+  .note { font-size: 7.6pt; color: var(--sub); }
+  .parts td { height: 4.6mm; font-size: 8pt; }
+  .footer { margin-top: 1.2mm; font-size: 7pt; color: var(--sub); text-align: right; }
+</style>
+</head>
+<body>
+
+<h1>ATmega328P（5V・16MHz）⇔ 34ピンFDD 配線表</h1>
+<div class="subtitle">
+  Arduino Nanoの代わりにATmega328P単体（DIP-28）を5V・16MHzで使う。ArduinoFDC／fdd_test.ino と同じピン割当（書き込み時のボード設定は「Arduino Uno」）。
+  FDDとは<b>直結</b>（レベル変換IC不要）。FDDの信号はすべて<b>アクティブLOW</b>。
+</div>
+
+<div class="top">
+  <!-- DIP pinout -->
+  <div>
+    <h2 style="margin-top:0">① チップのピン配置（上から見た図）</h2>
+    <svg viewBox="0 0 330 372" width="100%" style="display:block">
+      <rect x="120" y="8" width="90" height="356" rx="4" fill="#fafafa" stroke="#1a1a1a" stroke-width="1.5"/>
+      <path d="M155 8 A10 10 0 0 0 175 8" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+      <circle cx="132" cy="22" r="3" fill="#1a1a1a"/>
+      <text x="165" y="190" text-anchor="middle" font-size="11" font-weight="700" transform="rotate(-90 165 190)">ATmega328P</text>
+      <g font-size="9.5">
+        <!-- left pins 1-14, y = 22 + (n-1)*25 -->
+        <g>
+          <rect x="108" y="16" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="25" text-anchor="middle" font-size="8">1</text>
+          <text x="104" y="25" text-anchor="end" font-weight="700">RESET</text><text x="4" y="25" fill="#555" font-size="8.5">10k→5V・SW</text>
+
+          <rect x="108" y="41" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="50" text-anchor="middle" font-size="8">2</text>
+          <text x="104" y="50" text-anchor="end">RXD D0</text><text x="4" y="50" fill="#555" font-size="8.5">Uno D0</text>
+
+          <rect x="108" y="66" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="75" text-anchor="middle" font-size="8">3</text>
+          <text x="104" y="75" text-anchor="end">TXD D1</text><text x="4" y="75" fill="#555" font-size="8.5">Uno D1</text>
+
+          <rect x="108" y="91" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="100" text-anchor="middle" font-size="8">4</text>
+          <text x="104" y="100" text-anchor="end">D2</text><text x="4" y="100" fill="#1f5fa8" font-weight="700">FDD20 STEP</text>
+
+          <rect x="108" y="116" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="125" text-anchor="middle" font-size="8">5</text>
+          <text x="104" y="125" text-anchor="end">D3</text><text x="4" y="125" fill="#1f5fa8" font-weight="700">FDD18 DIR</text>
+
+          <rect x="108" y="141" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="150" text-anchor="middle" font-size="8">6</text>
+          <text x="104" y="150" text-anchor="end">D4</text><text x="4" y="150" fill="#1f5fa8" font-weight="700">FDD10 MOTEA</text>
+
+          <rect x="108" y="166" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="175" text-anchor="middle" font-size="8">7</text>
+          <text x="104" y="175" text-anchor="end" font-weight="700" fill="#2e7d32">VCC</text><text x="4" y="175" fill="#2e7d32" font-size="8.5">5V＋0.1µF</text>
+
+          <rect x="108" y="191" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="200" text-anchor="middle" font-size="8">8</text>
+          <text x="104" y="200" text-anchor="end" font-weight="700">GND</text>
+
+          <rect x="108" y="216" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="225" text-anchor="middle" font-size="8">9</text>
+          <text x="104" y="225" text-anchor="end">XTAL1</text><text x="4" y="225" fill="#555" font-size="8.5">16MHz＋22pF</text>
+
+          <rect x="108" y="241" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="250" text-anchor="middle" font-size="7.5">10</text>
+          <text x="104" y="250" text-anchor="end">XTAL2</text><text x="4" y="250" fill="#555" font-size="8.5">16MHz＋22pF</text>
+
+          <rect x="108" y="266" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="275" text-anchor="middle" font-size="7.5">11</text>
+          <text x="104" y="275" text-anchor="end">D5</text><text x="4" y="275" fill="#1f5fa8" font-weight="700">FDD14 DRVSA</text>
+
+          <rect x="108" y="291" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="300" text-anchor="middle" font-size="7.5">12</text>
+          <text x="104" y="300" text-anchor="end">D6</text><text x="4" y="300" fill="#1f5fa8" font-weight="700">FDD32 SIDE1</text>
+
+          <rect x="108" y="316" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="325" text-anchor="middle" font-size="7.5">13</text>
+          <text x="104" y="325" text-anchor="end">D7</text><text x="4" y="325" fill="#b0561a" font-weight="700">FDD8 INDEX</text>
+
+          <rect x="108" y="341" width="12" height="12" fill="#fff" stroke="#777"/><text x="114" y="350" text-anchor="middle" font-size="7.5">14</text>
+          <text x="104" y="350" text-anchor="end">D8</text><text x="4" y="350" fill="#b0561a" font-weight="700">FDD30 RDATA</text>
+        </g>
+        <!-- right pins 28 (top) to 15 (bottom) -->
+        <g>
+          <rect x="210" y="16" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="25" text-anchor="middle" font-size="7.5">28</text>
+          <text x="226" y="25" fill="#999">A5</text><text x="326" y="25" text-anchor="end" fill="#999" font-size="8.5">未使用</text>
+
+          <rect x="210" y="41" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="50" text-anchor="middle" font-size="7.5">27</text>
+          <text x="226" y="50" fill="#999">A4</text><text x="326" y="50" text-anchor="end" fill="#999" font-size="8.5">未使用</text>
+
+          <rect x="210" y="66" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="75" text-anchor="middle" font-size="7.5">26</text>
+          <text x="226" y="75" fill="#999">A3</text><text x="326" y="75" text-anchor="end" fill="#999" font-size="8.5">未使用</text>
+
+          <rect x="210" y="91" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="100" text-anchor="middle" font-size="7.5">25</text>
+          <text x="226" y="100">A2</text><text x="326" y="100" text-anchor="end" fill="#b0561a" font-weight="700">DSKCHG FDD34</text>
+
+          <rect x="210" y="116" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="125" text-anchor="middle" font-size="7.5">24</text>
+          <text x="226" y="125">A1</text><text x="326" y="125" text-anchor="end" fill="#1f5fa8" font-weight="700">DRVSB FDD12</text>
+
+          <rect x="210" y="141" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="150" text-anchor="middle" font-size="7.5">23</text>
+          <text x="226" y="150">A0</text><text x="326" y="150" text-anchor="end" fill="#1f5fa8" font-weight="700">MOTEB FDD16</text>
+
+          <rect x="210" y="166" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="175" text-anchor="middle" font-size="7.5">22</text>
+          <text x="226" y="175" font-weight="700">GND</text>
+
+          <rect x="210" y="191" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="200" text-anchor="middle" font-size="7.5">21</text>
+          <text x="226" y="200">AREF</text><text x="326" y="200" text-anchor="end" fill="#555" font-size="8.5">0.1µF→GND</text>
+
+          <rect x="210" y="216" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="225" text-anchor="middle" font-size="7.5">20</text>
+          <text x="226" y="225" font-weight="700" fill="#2e7d32">AVCC</text><text x="326" y="225" text-anchor="end" fill="#2e7d32" font-size="8.5">5V＋0.1µF</text>
+
+          <rect x="210" y="241" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="250" text-anchor="middle" font-size="7.5">19</text>
+          <text x="226" y="250">D13</text><text x="326" y="250" text-anchor="end" fill="#1f5fa8" font-weight="700">DENSEL FDD2</text>
+
+          <rect x="210" y="266" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="275" text-anchor="middle" font-size="7.5">18</text>
+          <text x="226" y="275">D12</text><text x="326" y="275" text-anchor="end" fill="#b0561a" font-weight="700">WPT FDD28</text>
+
+          <rect x="210" y="291" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="300" text-anchor="middle" font-size="7.5">17</text>
+          <text x="226" y="300">D11</text><text x="326" y="300" text-anchor="end" fill="#b0561a" font-weight="700">TRK00 FDD26</text>
+
+          <rect x="210" y="316" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="325" text-anchor="middle" font-size="7.5">16</text>
+          <text x="226" y="325">D10</text><text x="326" y="325" text-anchor="end" fill="#1f5fa8" font-weight="700">WGATE FDD24</text>
+
+          <rect x="210" y="341" width="12" height="12" fill="#fff" stroke="#777"/><text x="216" y="350" text-anchor="middle" font-size="7.5">15</text>
+          <text x="226" y="350">D9</text><text x="326" y="350" text-anchor="end" fill="#1f5fa8" font-weight="700">WDATA FDD22</text>
+        </g>
+      </g>
+    </svg>
+    <div class="note">切り欠き（半円）と●印の側が1番ピン。<span style="color:var(--out);font-weight:700">青</span>＝チップ→FDD、<span style="color:var(--in);font-weight:700">橙</span>＝FDD→チップ。</div>
+  </div>
+
+  <!-- FDD table -->
+  <div>
+    <h2 style="margin-top:0">② FDDケーブル側から見た配線（線番順）</h2>
+    <table class="fdd">
+      <thead><tr><th>線番</th><th>信号</th><th>向き</th><th>DIP</th><th>Arduino</th><th>追加部品</th><th>□</th></tr></thead>
+      <tbody>
+        <tr><td class="wire">2</td><td class="sig">/DENSEL</td><td class="c o">出力▶</td><td class="dip">19</td><td class="c mono">D13</td><td></td><td></td></tr>
+        <tr class="muted"><td class="wire">4</td><td>—</td><td class="c">—</td><td class="c">—</td><td class="c">—</td><td>未使用</td><td></td></tr>
+        <tr class="muted"><td class="wire">6</td><td>—</td><td class="c">—</td><td class="c">—</td><td class="c">—</td><td>未使用</td><td></td></tr>
+        <tr><td class="wire">8</td><td class="sig">/INDEX</td><td class="c i">◀入力</td><td class="dip">13</td><td class="c mono">D7</td><td></td><td></td></tr>
+        <tr><td class="wire">10</td><td class="sig">/MOTEA</td><td class="c o">出力▶</td><td class="dip">6</td><td class="c mono">D4</td><td></td><td></td></tr>
+        <tr><td class="wire">12</td><td class="sig">/DRVSB</td><td class="c o">出力▶</td><td class="dip">24</td><td class="c mono">A1</td><td></td><td></td></tr>
+        <tr><td class="wire">14</td><td class="sig">/DRVSA</td><td class="c o">出力▶</td><td class="dip">11</td><td class="c mono">D5</td><td></td><td></td></tr>
+        <tr><td class="wire">16</td><td class="sig">/MOTEB</td><td class="c o">出力▶</td><td class="dip">23</td><td class="c mono">A0</td><td></td><td></td></tr>
+        <tr><td class="wire">18</td><td class="sig">/DIR</td><td class="c o">出力▶</td><td class="dip">5</td><td class="c mono">D3</td><td></td><td></td></tr>
+        <tr><td class="wire">20</td><td class="sig">/STEP</td><td class="c o">出力▶</td><td class="dip">4</td><td class="c mono">D2</td><td></td><td></td></tr>
+        <tr><td class="wire">22</td><td class="sig">/WDATA</td><td class="c o">出力▶</td><td class="dip">15</td><td class="c mono">D9</td><td></td><td></td></tr>
+        <tr><td class="wire">24</td><td class="sig">/WGATE</td><td class="c o">出力▶</td><td class="dip">16</td><td class="c mono">D10</td><td class="add">10kΩ→5V</td><td></td></tr>
+        <tr><td class="wire">26</td><td class="sig">/TRK00</td><td class="c i">◀入力</td><td class="dip">17</td><td class="c mono">D11</td><td></td><td></td></tr>
+        <tr><td class="wire">28</td><td class="sig">/WPT</td><td class="c i">◀入力</td><td class="dip">18</td><td class="c mono">D12</td><td></td><td></td></tr>
+        <tr><td class="wire">30</td><td class="sig">/RDATA</td><td class="c i">◀入力</td><td class="dip">14</td><td class="c mono">D8</td><td class="add">1kΩ→5V</td><td></td></tr>
+        <tr><td class="wire">32</td><td class="sig">/SIDE1</td><td class="c o">出力▶</td><td class="dip">12</td><td class="c mono">D6</td><td></td><td></td></tr>
+        <tr><td class="wire">34</td><td class="sig">/DSKCHG</td><td class="c i">◀入力</td><td class="dip">25</td><td class="c mono">A2</td><td></td><td></td></tr>
+        <tr><td class="wire" style="font-size:8pt">奇数</td><td class="b">GND</td><td class="c">—</td><td class="dip" style="font-size:9pt">8, 22</td><td class="c">GND</td><td class="small">束ねて全部</td><td></td></tr>
+      </tbody>
+    </table>
+    <div class="note" style="margin-top:.6mm">
+      入力のうちRDATA以外はチップ内蔵プルアップで可。WGATEの10kΩは、リセット中にピンが浮いて誤って書き込まれるのを防ぐため。
+      線番は、M/B側コネクタを切り落とした切り口で赤線＝1番。FDDはねじれの先の端コネクタに挿す。
+    </div>
+  </div>
+</div>
+
+<div class="grid3" style="margin-top:2.2mm">
+  <div class="box">
+    <h3>③ 電源</h3>
+    <ul class="small">
+      <li>外部 <b>5V 2A</b> から、FDD電源とチップの7番・20番へ</li>
+      <li>FDD電源（小型4ピン）：<b>赤＝+5V</b>、黒＝GND（黄の12Vは不要）</li>
+      <li>5Vラインに100µFを1個</li>
+      <li><b>GNDはすべて共通</b>（電源、チップ、FDDの奇数線、Uno）</li>
+    </ul>
+  </div>
+  <div class="box">
+    <h3>④ USBシリアル（ATmegaを抜いたUno）</h3>
+    <table class="small">
+      <tr><th>Uno</th><th>接続先</th></tr>
+      <tr><td class="mono b">D0</td><td>チップの2番（RXD）</td></tr>
+      <tr><td class="mono b">D1</td><td>チップの3番（TXD）</td></tr>
+      <tr><td class="mono b">RESET</td><td>チップの1番（Unoの0.1µFを流用）</td></tr>
+      <tr><td class="mono b">GND</td><td>GND</td></tr>
+      <tr><td class="mono b" style="color:var(--red)">5V</td><td style="color:var(--red)">つながない</td></tr>
+    </table>
+  </div>
+  <div class="box">
+    <h3>⑤ 注意</h3>
+    <ul class="small">
+      <li>チップの17〜19番はISP書き込みにも使う。<b>ブートローダーはFDDをつなぐ前に</b>書き込む</li>
+      <li>ヒューズを書き換えた後は<b>水晶がないと動かない</b>。水晶と22pFを確認してから書き込む</li>
+      <li>最初の書き込みテストは、消えてもいいディスクで</li>
+    </ul>
+  </div>
+</div>
+
+<div class="grid2" style="margin-top:2.2mm">
+  <div>
+    <h2 style="margin-top:0">⑥ パーツリスト</h2>
+    <table class="parts">
+      <thead><tr><th>部品</th><th>数</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td>ATmega328P（3.3V 内蔵8MHz仕様品）</td><td class="c">1</td><td>手持ち・16MHz用に書き換え</td></tr>
+        <tr><td>16MHz水晶（HC-49）</td><td class="c">1</td><td>クロック</td></tr>
+        <tr><td>セラミックコンデンサ 22pF</td><td class="c">2</td><td>水晶用</td></tr>
+        <tr><td>セラミックコンデンサ 0.1µF</td><td class="c">3</td><td>VCC・AVCC・AREF</td></tr>
+        <tr><td>電解コンデンサ 100µF（10V以上）</td><td class="c">1</td><td>5Vライン</td></tr>
+        <tr><td>抵抗 10kΩ</td><td class="c">2</td><td>RESET・WGATE</td></tr>
+        <tr><td>抵抗 1kΩ</td><td class="c">1</td><td>RDATA</td></tr>
+        <tr><td>タクトスイッチ</td><td class="c">1</td><td>リセット</td></tr>
+        <tr><td>ICソケット 28ピン（幅0.3インチ）</td><td class="c">1</td><td>任意</td></tr>
+        <tr><td>5V 2A ACアダプタ＋DCジャック</td><td class="c">1</td><td>電源</td></tr>
+        <tr><td>FDD電源用 小型4ピンコネクタ</td><td class="c">1</td><td>FDD電源</td></tr>
+        <tr><td>電解コンデンサ 10µF</td><td class="c">1</td><td>書き込み時のUno RESET–GND</td></tr>
+        <tr><td>Arduino Uno</td><td class="c">1</td><td>手持ち・書き込み器／USBシリアル</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div>
+    <h2 style="margin-top:0">⑦ 手順</h2>
+    <div class="box">
+      <ol class="small">
+        <li>UnoにArduinoISPを書き込み、UnoのRESET–GNDに10µFを入れる</li>
+        <li>チップに水晶・コンデンサ・5V・GNDを付け、ISPの配線をする<br>
+          <span class="mono">Uno D10→1番、D11→17番、D12→18番、D13→19番</span></li>
+        <li>ボード「Arduino Uno」、書込装置「Arduino as ISP」で<b>「ブートローダーを書き込む」</b></li>
+        <li>ISPの配線を外し、②〜④のとおりFDDとUSBシリアルをつなぐ</li>
+        <li><span class="mono">fdd_test.ino</span> で、モーター・シーク・回転数（約300rpm）を確認</li>
+        <li>ArduinoFDCを書き込んで、ディスクの読み書き</li>
+      </ol>
+    </div>
+  </div>
+</div>
+
+<div class="footer">ATmega328P-PU（DIP-28）／5V・16MHz／ArduinoFDC（github.com/dhansel/ArduinoFDC）のUno用ピン割当</div>
+</body>
+</html>
