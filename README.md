@@ -8,6 +8,11 @@ PC用の34ピンフロッピーディスクドライブを、Arduinoボードを
 - ArduinoFDCによるセクタ単位の読み書きとフォーマット
 - ステッピングモーターを使った音階演奏、MIDIファイルの再生
 
+## Windowsツールとケース
+
+- [Windows用フロッピー・ツール](windows/README.md)で、FAT12の読み書き、フォーマット、イメージ保存ができます。
+- [JU-256A046PCのケースと前面ベゼル](docs/cad/README.md)に、STEPと前面を下にしたSTLを収録しています。
+
 ## 配線
 
 ピン割り当てはArduinoFDCのUno/Nano用と同じです。**A4に印刷できる配線表**を `docs/` に置いてあります。
