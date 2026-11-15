@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from fdd_core import Cancelled, Drive, Fat12, IMAGE_SIZE, SIZE, SectorError, blank_metadata, order_sectors
+from fdd_core import Cancelled, DMF_IMAGE_SIZE, Drive, Fat12, IMAGE_SIZE, SIZE, X68_IMAGE_SIZE, SectorError, blank_metadata, order_sectors
 
 
 class ImageDrive:
@@ -137,14 +137,19 @@ class FatTests(unittest.TestCase):
 
 class FirmwarePort:
     """Simulated firmware with a backing image; deliberately splits replies."""
-    def __init__(self, *, high_speed=False, corrupt_at=None):
-        self.disk = bytearray(IMAGE_SIZE)
+    def __init__(self, *, high_speed=False, corrupt_at=None, music=False, dmf=False, x68=False):
+        self.disk = bytearray(X68_IMAGE_SIZE if x68 else DMF_IMAGE_SIZE if dmf else IMAGE_SIZE)
         self.rx = bytearray()
         self.commands = []
         self.closed = False
         self.corrupt_reply = False
         self.high_speed = high_speed
         self.corrupt_at = corrupt_at
+        self.music = music
+        self.dmf = dmf
+        self.x68 = x68
+        self.sectors_per_side = 18
+        self.sector_size = SIZE
         self.baudrate = 115200
 
     def reset_input_buffer(self):
@@ -164,33 +169,115 @@ class FirmwarePort:
         op = chr(packet[1])
         lba = struct.unpack_from("<H", packet, 2)[0]
         self.commands.append((op, lba))
-        if op in ("H", "G", "D") and not self.high_speed:
+        if ((op in ("H", "G", "D") and not self.high_speed) or
+                (op == "M" and not self.music) or
+                (op == "J" and not (self.x68 if lba == 2 else self.dmf))):
             self.rx.extend(bytes((0x5A, 99)))
             return
         self.rx.extend(bytes((0x5A, 0)))
         if op in ("F", "G"):
             first, last = (lba & 255, lba >> 8) if op == "G" else (lba, lba)
-            start, end = first * 36 * SIZE, (last + 1) * 36 * SIZE
+            cylinder_bytes = self.sectors_per_side * 2 * self.sector_size
+            start, end = first * cylinder_bytes, (last + 1) * cylinder_bytes
             self.disk[start:end] = b"\xf6" * (end - start)
         elif op in ("w", "W", "T"):
             data = packet[4:-2]
-            assert len(data) == SIZE
+            assert len(data) == (SIZE if op == "T" else self.sector_size)
             assert binascii.crc_hqx(data, 0xFFFF) == struct.unpack("<H", packet[-2:])[0]
             if op == "T":
                 crc = binascii.crc_hqx(data, 0xFFFF) ^ (self.baudrate == self.corrupt_at)
                 self.rx.extend(data + struct.pack("<H", crc))
             else:
-                self.disk[lba * SIZE:(lba + 1) * SIZE] = data
+                self.disk[lba * self.sector_size:(lba + 1) * self.sector_size] = data
         elif op in ("R", "D"):
+            assert op != "D" or lba % self.sectors_per_side != self.sectors_per_side - 1
             for address in range(lba, lba + (2 if op == "D" else 1)):
-                data = self.disk[address * SIZE:(address + 1) * SIZE]
+                data = self.disk[address * self.sector_size:(address + 1) * self.sector_size]
                 crc = binascii.crc_hqx(data, 0xFFFF) ^ self.corrupt_reply
                 self.rx.extend(data + struct.pack("<H", crc))
-        elif op not in ("O", "H"):
+        elif op == "J":
+            self.sectors_per_side = {0: 18, 1: 21, 2: 8}[lba]
+            self.sector_size = 1024 if lba == 2 else SIZE
+        elif op == "O":
+            self.sectors_per_side = 18
+            self.sector_size = SIZE
+        elif op not in ("H", "M"):
             raise AssertionError(op)
 
 
 class TransferTests(unittest.TestCase):
+    def test_xdf_restores_1024_byte_sectors_and_77_cylinders(self):
+        port = FirmwarePort(high_speed=True, x68=True)
+        image = b"".join(struct.pack("<H", address) * 512 for address in range(1232))
+        self.assertEqual(len(image), X68_IMAGE_SIZE)
+        with patch("fdd_core.serial.Serial", return_value=port), patch("fdd_core.time.sleep"):
+            with Drive("COM99", low_latency=False) as drive:
+                drive.restore_image(image, reformat=True)
+                self.assertEqual((drive.sector_size, drive.cylinders), (512, 80))
+        self.assertEqual(port.disk, image)
+        self.assertIn(("G", 70 | 76 << 8), port.commands)
+        self.assertEqual(port.commands.count(("R", 1231)), 2)
+        self.assertFalse(any(op == "D" for op, _ in port.commands))
+
+    def test_dmf_restore_checks_last_sector_and_restores_standard_mode(self):
+        port = FirmwarePort(high_speed=True, dmf=True)
+        image = b"".join(struct.pack("<H", address) * (SIZE // 2)
+                         for address in range(DMF_IMAGE_SIZE // SIZE))
+        with patch("fdd_core.serial.Serial", return_value=port), patch("fdd_core.time.sleep"):
+            with Drive("COM99", low_latency=False) as drive:
+                drive.restore_image(image, reformat=True)
+                self.assertEqual(drive.sectors_per_side, 18)
+        self.assertEqual(port.disk, image)
+        self.assertIn(("w", 3359), port.commands)
+        self.assertEqual(port.commands.count(("R", 3359)), 2)
+        self.assertIn(("D", 3339), port.commands)
+        self.assertEqual(port.sectors_per_side, 18)
+
+    def test_old_firmware_rejects_dmf_before_mutating_disk(self):
+        port = FirmwarePort(high_speed=True)
+        with patch("fdd_core.serial.Serial", return_value=port), patch("fdd_core.time.sleep"):
+            with Drive("COM99", low_latency=False) as drive:
+                with self.assertRaisesRegex(ValueError, "DMF対応"):
+                    drive.restore_image(bytes(DMF_IMAGE_SIZE), reformat=True)
+        self.assertFalse(any(op in ("F", "G", "w", "W") for op, _ in port.commands))
+
+    def test_gui_music_fits_high_notes_into_drive_range(self):
+        port = FirmwarePort(music=True)
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch("fdd_core.serial.Serial", return_value=port), patch("fdd_core.time.sleep", sleep), \
+                patch("fdd_core.time.monotonic", side_effect=lambda: clock[0]):
+            with Drive("COM99", low_latency=False, fast=False) as drive:
+                drive.play_notes([(523, 20), (784, 20), (0, 20)], fit_drive_range=True)
+        self.assertEqual([frequency for op, frequency in port.commands if op == "M"], [262, 196, 0])
+
+    def test_music_refreshes_long_notes_then_releases_drive_for_disk_io(self):
+        port = FirmwarePort(high_speed=True, music=True)
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch("fdd_core.serial.Serial", return_value=port), patch("fdd_core.time.sleep", sleep), \
+                patch("fdd_core.time.monotonic", side_effect=lambda: clock[0]):
+            with Drive("COM99", low_latency=False) as drive:
+                drive.play_notes([(440, 800), (0, 50)])
+                self.assertEqual(drive.read(0), bytes(SIZE))
+        first_note = port.commands.index(("M", 440))
+        read = port.commands.index(("R", 0))
+        self.assertEqual(port.commands[first_note:read], [("M", 440)] * 3 + [("M", 0), ("O", 0)])
+
+    def test_old_firmware_refuses_music_and_still_allows_disk_io(self):
+        port = FirmwarePort(high_speed=True)
+        with patch("fdd_core.serial.Serial", return_value=port), patch("fdd_core.time.sleep"):
+            with Drive("COM99", low_latency=False) as drive:
+                with self.assertRaisesRegex(ValueError, "演奏対応"):
+                    drive.play_notes([(440, 100)])
+                self.assertEqual(drive.read(0), bytes(SIZE))
+
     def test_format_and_file_copy_via_serial_protocol(self):
         port = FirmwarePort()
         with patch("fdd_core.serial.Serial", return_value=port), patch("fdd_core.time.sleep"):

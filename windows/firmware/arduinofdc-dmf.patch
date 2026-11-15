@@ -1,0 +1,268 @@
+--- a/ArduinoFDC.h
++++ b/ArduinoFDC.h
+@@ -43,7 +43,9 @@
+     DT_5_DDonHD, // 5.25" double density disk in high density drive (360 KB)
+     DT_5_HD,     // 5.25" high density (1.2 MB)
+     DT_3_DD,     // 3.5"  double density (720 KB)
+-    DT_3_HD      // 3.5"  high density (1.44 MB)
++    DT_3_HD,     // 3.5"  high density (1.44 MB)
++    DT_3_DMF,    // 3.5"  high density (DMF 1.68 MB)
++    DT_3_X68     // X68000 and PC-98 1232 KiB (77 x 2 x 8 x 1024)
+   };
+ 
+   enum DensityPinMode {
+--- a/ArduinoFDC.cpp
++++ b/ArduinoFDC.cpp
+@@ -223,7 +223,9 @@
+     {2, 40,  9,  80, 2},  // 5.25" DD disk in HD drive (360 KB)
+     {2, 80, 15,  85, 1},  // 5.25" HD (1.2 MB)
+     {2, 80,  9,  80, 1},  // 3.5"  DD (720 KB)
+-    {2, 80, 18, 100, 1}   // 3.5"  HD (1.44 MB)
++    {2, 80, 18, 100, 1},  // 3.5"  HD (1.44 MB)
++    {2, 80, 21,  12, 1},  // 3.5"  HD (DMF 1.68 MB)
++    {2, 77,  8, 116, 1}   // X68000 / PC-98 1232 KiB
+   };
+ 
+ 
+@@ -711,10 +713,13 @@
+ 
+   byte numsec     = geometry[driveType].numSectors;
+   byte datagaplen = geometry[driveType].dataGap;
++  const bool largeSector = driveType == ArduinoFDCClass::DT_3_X68;
++  const byte dataPages = largeSector ? 4 : 2;
+ 
+   // pre-compute ID records
+   memset(buffer, 0, 8*numsec);
+-  i = 0;
++  // DMF rotates each cylinder by three sector slots.
++  i = driveType == ArduinoFDCClass::DT_3_DMF ? (track * 3) % numsec : 0;
+   byte n = 0;
+   while( n<numsec )
+     {
+@@ -728,7 +733,7 @@
+           buffer[bi+1] = track;     // cylinder number
+           buffer[bi+2] = side;      // side number
+           buffer[bi+3] = n+1;       // sector number
+-          buffer[bi+4] = 2;         // sector length
++          buffer[bi+4] = largeSector ? 3 : 2;         // sector length
+           uint16_t crc = calc_crc(buffer+bi, 5);
+           buffer[bi+5] = crc / 256; // CRC
+           buffer[bi+6] = crc & 255; // CRC
+@@ -986,7 +991,7 @@
+      //  S S S S S   L S  S S S S   L S    L S S S   L S   ...
+      // => SSSSLS LSSSLS
+      "          ldi   r26, 0\n"            // write 2*256+0 = 512 bytes
+-     "          ldi   r27, 2\n"
++     "          mov   r27, %4\n"
+      "          WRTPS\n"                   // write short pulse
+      "          rjmp dskip\n"
+      "dloop:    WRTPL\n"                   // write long  pulse
+@@ -1000,13 +1005,9 @@
+      "          dec  r27\n"                // decrement byte counter (high)
+      "          brne   dloop\n"            // loop until 0
+ 
+-     // 14) ---------- data checksum (0x2B, 0xF6)
+-     //
+-     //  0xF6             0x2B             0xF6
+-     //  1 1 1 1 0 1 1 0  0 0 1 0 1 0 1 1  1 1 1 1 0 1 1 0
+-     // 0101010100010100 1010010001000101 0101010100010100
+-     //  L S S S   L S   M S  M   L   L S  S S S S   L S
+-     // => MSMLSLSSSSLS
++     // CRC after A1 A1 A1 FB and F6 fill: 2BF6 (512 B), 8CEC (1024 B).
++     "          sbrc  %4, 2\n"
++     "          rjmp  x68crc\n"
+      "          WRTPM\n"                   // write medium pulse
+      "          WRTPS\n"                   // write short  pulse
+      "          WRTPM\n"                   // write medium pulse
+@@ -1019,7 +1020,23 @@
+      "          WRTPS\n"                   // write short  pulse
+      "          WRTPL\n"                   // write long   pulse
+      "          WRTPS\n"                   // write short  pulse
+-     
++     "          rjmp  datacrcdone\n"
++     "x68crc:\n"
++     "          WRTPL\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPM\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPS\n"
++     "          WRTPL\n"
++     "          WRTPS\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "datacrcdone:\n"
++
+      // if this was the last sector then the track is done
+      "          dec    %1\n"              // (1)    decrement sector counter
+      "          breq   ftdone\n"          // (1/2)  jump if done
+@@ -1095,7 +1112,7 @@
+      "ftend:\n"
+ 
+      :                                            // no outputs
+-     : "r"(bitlen), "r"(numsec), "r"(datagaplen), "z"(buffer)      // inputs  (z=r30/r31)
++     : "r"(bitlen), "r"(numsec), "r"(datagaplen), "z"(buffer), "r"(dataPages) // inputs  (z=r30/r31)
+      : "r16", "r17", "r18", "r19", "r20", "r21", "r26", "r27"); // clobbers
+ 
+   // set WRITEGATE back to input (releases it HIGH)
+@@ -1113,7 +1130,7 @@
+ }
+ 
+ 
+-static byte wait_header(byte bitlen, byte track, byte side, byte sector)
++static byte wait_header(byte bitlen, byte track, byte side, byte sector, byte sizeCode)
+ {
+   byte attempts = 50;
+ 
+@@ -1135,7 +1152,7 @@
+         {
+           // make sure this is an ID record and check whether it contains the
+           // expected track/side/sector information and the CRC is ok
+-          if( header[0]==0xFE && (track==0xFF || track==header[1]) && side==header[2] && sector==header[3] )
++          if( header[0]==0xFE && (track==0xFF || track==header[1]) && side==header[2] && sector==header[3] && sizeCode==header[4] )
+             {
+               if( calc_crc(header, 5) == 256u*header[5]+header[6] )
+                 return S_OK;
+@@ -1218,7 +1235,8 @@
+   digitalWriteOC(PIN_SIDE, side>0 ? LOW : HIGH);
+ 
+   // wait for sector header
+-  byte res = wait_header(bitLength, -1, side, sector);
++  const byte sizeCode = driveType == ArduinoFDCClass::DT_3_X68 ? 3 : 2;
++  byte res = wait_header(bitLength, -1, side, sector, sizeCode);
+ 
+   // if we found the sector header but it's not on the correct track then step to correct track and check again
+   if( res==S_OK && header[1]!=track )
+@@ -1231,7 +1249,7 @@
+           step_tracks(driveType, track-header[1]);
+           noInterrupts();
+ 
+-          res = wait_header(bitLength, track, side, sector);
++          res = wait_header(bitLength, track, side, sector, sizeCode);
+         }
+       else
+         res = S_NOHEADER;
+@@ -1246,7 +1264,7 @@
+         {
+           step_tracks(driveType, track);
+           noInterrupts();
+-          res = wait_header(bitLength, track, side, sector);
++          res = wait_header(bitLength, track, side, sector, sizeCode);
+         }
+       else
+         {
+@@ -1397,7 +1415,8 @@
+ void ArduinoFDCClass::setDensityPin()
+ {
+ #if defined(PIN_DENSITY)
+-  byte isHD = m_driveType[m_currentDrive]==DT_3_HD || m_driveType[m_currentDrive]==DT_5_HD;
++  byte isHD = m_driveType[m_currentDrive]==DT_3_HD || m_driveType[m_currentDrive]==DT_3_DMF ||
++              m_driveType[m_currentDrive]==DT_5_HD || m_driveType[m_currentDrive]==DT_3_X68;
+   switch( m_densityPinMode[m_currentDrive] )
+     {
+     case DP_OUTPUT_LOW_FOR_DD:
+@@ -1433,6 +1452,25 @@
+ 
+       switch( m_driveType[m_currentDrive] )
+         {
++        case DT_3_X68:
++          {
++            TCCRA = 0;
++            TCCRB = bit(CS0);
++            TCCRC = 0;
++            bitLength = 0;
++            if (wait_index_hole()) {
++              const unsigned long start = micros();
++              if (wait_index_hole()) {
++                const unsigned long period = micros() - start;
++                if (period >= 162000 && period <= 172000) bitLength = 16;
++                // 19 AVR clocks approximate the 300-rpm target of 19.2 clocks.
++                if (period >= 195000 && period <= 205000) bitLength = 19;
++              }
++            }
++            TCCRB = 0;
++            break;
++          }
++        case DT_3_DMF:
+         case DT_3_HD: bitLength = 16; break;
+         case DT_3_DD: bitLength = 32; break;
+         case DT_5_HD: bitLength = 16; break;
+@@ -1478,6 +1516,7 @@
+ {
+   byte res = S_OK;
+   byte driveType = m_driveType[m_currentDrive];
++  const uint16_t payloadSize = driveType == DT_3_X68 ? 1024 : 512;
+ 
+   // do some sanity checks
+   if( !m_initialized )
+@@ -1518,7 +1557,7 @@
+       if( res==S_OK )
+         {
+           // wait for data sync mark and read data
+-          if( read_data(bitLength, buffer, 515, false)==S_OK )
++          if( read_data(bitLength, buffer, payloadSize + 3, false)==S_OK )
+             {
+               if( buffer[0]!=0xFB )
+                 { 
+@@ -1529,10 +1568,10 @@
+ #endif
+                   res = S_INVALIDID;
+                 }
+-              else if( calc_crc(buffer, 513) != 256u*buffer[513]+buffer[514] )
++              else if( calc_crc(buffer, payloadSize + 1) != 256u*buffer[payloadSize + 1]+buffer[payloadSize + 2] )
+                 { 
+ #ifdef DEBUG
+-                  Serial.print(F("Data CRC error. Found: ")); Serial.print(256u*buffer[513]+buffer[514], HEX); Serial.print(", expected: "); Serial.println(calc_crc(buffer, 513), HEX);
++                  Serial.print(F("Data CRC error. Found: ")); Serial.print(256u*buffer[payloadSize + 1]+buffer[payloadSize + 2], HEX); Serial.print(", expected: "); Serial.println(calc_crc(buffer, payloadSize + 1), HEX);
+ #endif
+                   res = S_CRC; 
+                 }
+@@ -1560,6 +1599,7 @@
+ {
+   byte res = S_OK;
+   byte driveType = m_driveType[m_currentDrive];
++  const uint16_t payloadSize = driveType == DT_3_X68 ? 1024 : 512;
+ 
+   // do some sanity checks
+   if( !m_initialized )
+@@ -1593,12 +1633,13 @@
+     res = wait_index_hole() ? S_READONLY : S_NOTREADY;
+   else
+     {
++      const byte sizeCode = driveType == DT_3_X68 ? 3 : 2;
+       // calculate CRC for the sector data
+       buffer[0]   = 0xFB; // "data" id
+-      uint16_t crc = calc_crc(buffer, 513);
+-      buffer[513] = crc/256;
+-      buffer[514] = crc&255;
+-      buffer[515] = 0x4E; // first byte of post-data gap
++      uint16_t crc = calc_crc(buffer, payloadSize + 1);
++      buffer[payloadSize + 1] = crc/256;
++      buffer[payloadSize + 2] = crc&255;
++      buffer[payloadSize + 3] = 0x4E; // first byte of post-data gap
+   
+       // writing data is time sensitive so we can't have interrupts
+       noInterrupts();
+@@ -1610,16 +1651,16 @@
+       if( res==S_OK )
+         {
+           // write the sector data
+-          write_data(bitLength, buffer, 516);
++          write_data(bitLength, buffer, payloadSize + 4);
+           
+           // if we are supposed to verify the data then do so now
+           if( verify )
+             {
+               // wait for sector to come around again
+-              res = wait_header(bitLength, track, side, sector);
++              res = wait_header(bitLength, track, side, sector, sizeCode);
+               
+               // wait for data sync mark and compare the data
+-              if( res==S_OK ) res = read_data(bitLength, buffer, 515, true);
++              if( res==S_OK ) res = read_data(bitLength, buffer, payloadSize + 3, true);
+             }
+         }
+ 

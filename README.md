@@ -10,7 +10,8 @@ PC用の34ピンフロッピーディスクドライブを、Arduinoボードを
 
 ## Windowsツールとケース
 
-- [Windows用フロッピー・ツール](windows/README.md)で、FAT12の読み書き、フォーマット、イメージ保存ができます。
+- [Windows用フロッピー・ツール](windows/README.md)で、FAT12の読み書き、フォーマット、イメージの保存と復元、MIDI演奏ができます。
+- [Windowsでの A: 自動マウント](windows/README.md#エクスプローラーで開く)は、1.44 MB FAT12のFDを入れると読み取り専用で割り当てます。A3のLEDで挿入状態を表示できます。
 - [JU-256A046PCのケースと前面ベゼル](docs/cad/README.md)に、STEPと前面を下にしたSTLを収録しています。
 
 ## 配線

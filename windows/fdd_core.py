@@ -13,10 +13,16 @@ import time
 
 import serial
 from ftdi_link import FtdiLink
+from ibm_xdf import BAUD as IBM_XDF_BAUD, IBM_XDF_IMAGE_SIZE, image_layout, read_field, write_field
 
 SIZE = 512
 SECTORS = 2880
 IMAGE_SIZE = SIZE * SECTORS
+DMF_SECTORS_PER_SIDE = 21
+DMF_IMAGE_SIZE = SIZE * 80 * 2 * DMF_SECTORS_PER_SIDE
+X68_IMAGE_SIZE = 77 * 2 * 8 * 1024
+# The JU-256A046PC passed repeated scales through this frequency.
+MUSIC_GUI_MAX_HZ = 262
 SECTOR_ERRORS = {
     2: "ドライブが準備できていません（電源・ディスク・信号を確認）",
     3: "同期マークが見つかりません",
@@ -39,7 +45,7 @@ class SectorError(Exception):
     def __init__(self, op, address, code):
         self.code = code
         self.address = address
-        label = "トラック" if op in ("F", "G") else "LBA"
+        label = "トラック" if op in ("F", "G") else "演奏 Hz" if op == "M" else "LBA"
         if op == "G":
             address = f"{address & 255}〜{address >> 8}"
         super().__init__(f"{label} {address}: {SECTOR_ERRORS.get(code, f'エラー {code}')}")
@@ -49,12 +55,13 @@ def noop(*args):
     pass
 
 
-def order_sectors(addresses, spacing=None):
+def order_sectors(addresses, spacing=None, sectors_per_side=18):
     """Group by track-side and leave enough sectors between transfers."""
     addresses = set(addresses)
     if spacing is not None:
-        return sorted(addresses, key=lambda n: (n // 18, (n % 18) % spacing, (n % 18) // spacing))
-    return sorted(addresses, key=lambda n: (n // 18, (n % 18) * 13 % 18))
+        return sorted(addresses, key=lambda n: (
+            n // sectors_per_side, (n % sectors_per_side) % spacing, (n % sectors_per_side) // spacing))
+    return sorted(addresses, key=lambda n: (n // sectors_per_side, (n % sectors_per_side) * 13 % sectors_per_side))
 
 
 def digest(data):
@@ -86,6 +93,9 @@ class Drive:
         self.baudrate = 115200
         self.transport = "COM"
         self.paired_reads = False
+        self.sectors_per_side = 18
+        self.sector_size = SIZE
+        self.cylinders = 80
 
     def __enter__(self):
         try:
@@ -165,7 +175,7 @@ class Drive:
             spacing = 4 if low else 5
         else:
             spacing = 6 if low else None
-        return order_sectors(addresses, spacing)
+        return order_sectors(addresses, spacing, self.sectors_per_side)
 
     def check(self):
         if self.cancelled():
@@ -184,8 +194,9 @@ class Drive:
             self.check()
         header = bytes((0xA5, ord(op))) + struct.pack("<H", address)
         if payload is not None:
-            if len(payload) != SIZE:
-                raise ValueError("セクターサイズは512バイトです。")
+            expected_size = SIZE if op == "T" else self.sector_size
+            if len(payload) != expected_size:
+                raise ValueError(f"セクターサイズは{expected_size}バイトです。")
             header += payload + struct.pack("<H", binascii.crc_hqx(payload, 0xFFFF))
         self.link.write(header)
         deadline = time.monotonic() + timeout
@@ -196,17 +207,20 @@ class Drive:
             raise SectorError(op, address, status)
         if op == "P":
             return self.exact(6, deadline)
+        if op == "E":
+            return self.exact(2, deadline)
         if op == "D":
             packets = self.exact(2 * (SIZE + 2), deadline)
             return (self.read_packet(address, packets[:SIZE + 2]),
                     self.read_packet(address + 1, packets[SIZE + 2:]))
         if op in ("R", "T"):
-            return self.read_packet(address, self.exact(SIZE + 2, deadline))
+            size = SIZE if op == "T" else self.sector_size
+            return self.read_packet(address, self.exact(size + 2, deadline))
 
     @staticmethod
     def read_packet(address, packet):
-        data = packet[:SIZE]
-        expected = struct.unpack_from("<H", packet, SIZE)[0]
+        data = packet[:-2]
+        expected = struct.unpack_from("<H", packet, len(data))[0]
         if expected != binascii.crc_hqx(data, 0xFFFF):
             raise ValueError(f"LBA {address}: シリアル転送のCRCが一致しません。")
         return data
@@ -223,16 +237,53 @@ class Drive:
     def read(self, address):
         return self.sector("R", address)
 
+    def play_notes(self, notes, *, fit_drive_range=False, max_hz=MUSIC_GUI_MAX_HZ):
+        if not notes or any(
+            type(frequency) is not int or type(duration) is not int
+            or (frequency != 0 and not 20 <= frequency <= 2000) or duration <= 0
+            for frequency, duration in notes
+        ):
+            raise ValueError("音符は [周波数Hz, 長さms] で指定してください。休符は0 Hz、音は20〜2000 Hzです。")
+        total = sum(duration for _, duration in notes)
+        elapsed_ms = 0
+        deadline = None
+        try:
+            for frequency, duration in notes:
+                if fit_drive_range:
+                    while frequency > max_hz:
+                        frequency = (frequency + 1) // 2
+                self.request("M", frequency, timeout=2)
+                now = time.monotonic()
+                deadline = (deadline if deadline is not None else now) + duration / 1000
+                refresh = now + .3
+                while now < deadline:
+                    self.check()
+                    if now >= refresh:
+                        self.request("M", frequency, timeout=2)
+                        refresh = now + .3
+                    time.sleep(max(0, min(.025, deadline - time.monotonic())))
+                    now = time.monotonic()
+                elapsed_ms += duration
+                self.progress("演奏中", elapsed_ms, total)
+        except SectorError as error:
+            if error.code == 99:
+                raise ValueError("演奏対応の転送用ファームウェアを基板に書き込んでください。") from error
+            raise
+        finally:
+            with contextlib.suppress(OSError, ValueError, SectorError):
+                self.request("O", check_cancel=False, timeout=2)
+
     def read_many(self, addresses, label):
         pending = set(addresses)
         groups = {}
         for address in sorted(pending):
             if address in pending:
-                pair = self.paired_reads and address % 18 != 17 and address + 1 in pending
+                pair = (self.paired_reads and address % self.sectors_per_side != self.sectors_per_side - 1
+                        and address + 1 in pending)
                 groups[address] = (address, address + 1) if pair else (address,)
                 pending.difference_update(groups[address])
         spacing = 4 if self.baudrate == 1000000 and self.transport == "FTDI・低遅延" else 6
-        ordered = order_sectors(groups, spacing) if self.paired_reads else self.order(groups)
+        ordered = order_sectors(groups, spacing, self.sectors_per_side) if self.paired_reads else self.order(groups)
         total = sum(map(len, groups.values()))
         result = {}
         for address in ordered:
@@ -275,39 +326,131 @@ class Drive:
             if error.code != 99:
                 raise
         else:
-            self.progress("トラックを初期化中", 10, 80)
-            for first in range(10, 80, 10):
-                last = first + 9
+            self.progress("トラックを初期化中", 10, self.cylinders)
+            for first in range(10, self.cylinders, 10):
+                last = min(first + 9, self.cylinders - 1)
                 self.request("G", first | last << 8, timeout=40)
-                self.progress("トラックを初期化中", last + 1, 80)
+                self.progress("トラックを初期化中", last + 1, self.cylinders)
             return
-        for track in range(80):
+        for track in range(self.cylinders):
             self.request("F", track)
-            self.progress("トラックを初期化中", track + 1, 80)
+            self.progress("トラックを初期化中", track + 1, self.cylinders)
 
     def restore_image(self, image, reformat):
-        if len(image) != IMAGE_SIZE:
-            raise ValueError("対応イメージは1,474,560バイトの生イメージです。")
+        if len(image) == IBM_XDF_IMAGE_SIZE:
+            self.restore_ibm_xdf(image, reformat)
+            return
+        if len(image) == IMAGE_SIZE:
+            self.restore_tracks(image, reformat)
+            return
+        if len(image) == DMF_IMAGE_SIZE:
+            mode, name, sectors, size, cylinders = 1, "DMF", DMF_SECTORS_PER_SIDE, SIZE, 80
+        elif len(image) == X68_IMAGE_SIZE:
+            mode, name, sectors, size, cylinders = 2, "X68000／PC-98 XDF", 8, 1024, 77
+        else:
+            raise ValueError("1.44 MB、DMF、X68000／PC-98標準2HD、IBM／OS/2 XDFの生イメージに対応します。")
+        try:
+            self.request("J", mode)
+        except SectorError as error:
+            if error.code == 99:
+                raise ValueError(f"{name}対応ファームウェアを基板に書き込んでください。") from error
+            raise
+        self.sectors_per_side, self.sector_size, self.cylinders = sectors, size, cylinders
+        paired = self.paired_reads
+        self.paired_reads = paired and size == SIZE
+        try:
+            self.restore_tracks(image, reformat)
+            sectors_per_cylinder = self.sectors_per_side * 2
+            # Restart the motor before the long seek back to cylinder zero.
+            self.request("O")
+            self.request("J", mode)
+            for track in range(cylinders):
+                addresses = range(track * sectors_per_cylinder, (track + 1) * sectors_per_cylinder)
+                blocks = self.read_many(addresses, f"{name}のシリンダを再照合中")
+                for address in addresses:
+                    if blocks[address] != image[address * size:(address + 1) * size]:
+                        raise SectorError("R", address, 8)
+                self.progress(f"{name}の全セクターを再照合中", track + 1, cylinders)
+        except BaseException:
+            with contextlib.suppress(OSError, ValueError, SectorError):
+                self.request("O", check_cancel=False, timeout=2)
+            raise
+        else:
+            self.request("O", check_cancel=False, timeout=2)
+        finally:
+            self.sectors_per_side = 18
+            self.sector_size = SIZE
+            self.cylinders = 80
+            self.paired_reads = paired
+
+    def restore_ibm_xdf(self, image, reformat):
+        layout = image_layout(image)
+        if self.transport != "FTDI・低遅延":
+            raise ValueError("IBM／OS/2 XDFの復元にはFTDIの低遅延接続が必要です。")
+        try:
+            self.request("q", timeout=2)
+        except SectorError as error:
+            if error.code == 99:
+                raise ValueError("IBM／OS/2 XDF対応ファームウェアを基板に書き込んでください。") from error
+            raise
+        self.request("H", 4, timeout=2)
+        time.sleep(0.1)
+        self.link.baudrate = IBM_XDF_BAUD
+        self.baudrate = IBM_XDF_BAUD
+        self.link.reset_input_buffer()
+        if reformat:
+            for cylinder in range(len(layout)):
+                self.request("I", cylinder, timeout=8)
+                self.request("I", cylinder | 0x80, timeout=8)
+                self.progress("IBM XDFを初期化中", cylinder + 1, len(layout))
+        for cylinder, sectors in enumerate(layout, 1):
+            for sector in sectors:
+                data = sector.data(image)
+                try:
+                    write_field(self, "U", sector.address, data)
+                except SectorError as error:
+                    if error.code != 99:
+                        raise
+                    # q already established support. Let an outstanding
+                    # prefix receive time out before resynchronizing.
+                    time.sleep(2.2)
+                    self.link.reset_input_buffer()
+                    self.request("q", timeout=2)
+                    write_field(self, "U", sector.address, data)
+            self.progress("IBM XDFを書き込み中", cylinder, len(layout))
+        for cylinder, sectors in enumerate(layout, 1):
+            for sector in sectors:
+                data, _ = read_field(self, "u", sector.address, sector.size)
+                if data != sector.data(image):
+                    raise ValueError(
+                        f"シリンダ{sector.cylinder}、面{sector.side}、"
+                        f"セクター{sector.identifier:02X}のデータが一致しません。"
+                    )
+            self.progress("IBM XDFの全セクターを照合中", cylinder, len(layout))
+
+    def restore_tracks(self, image, reformat):
         if reformat:
             self.format_tracks()
-        for track in range(80):
-            addresses = self.order(range(track * 36, track * 36 + 36))
+        sectors = self.sectors_per_side * 2
+        size = self.sector_size
+        for track in range(self.cylinders):
+            addresses = self.order(range(track * sectors, (track + 1) * sectors))
             for attempt in range(2):
                 try:
                     for address in addresses:
-                        offset = address * SIZE
-                        self.sector("w", address, image[offset:offset + SIZE])
+                        offset = address * size
+                        self.sector("w", address, image[offset:offset + size])
                     readback = self.read_many(addresses, "イメージのトラックを照合中")
                     for address in addresses:
-                        offset = address * SIZE
-                        if readback[address] != image[offset:offset + SIZE]:
+                        offset = address * size
+                        if readback[address] != image[offset:offset + size]:
                             raise SectorError("R", address, 8)
                     break
                 except SectorError as error:
                     if not reformat or attempt or error.code not in (2, 3, 4, 6, 8):
                         raise
                     self.request("F", track)
-            self.progress("イメージを書き込み・照合中", track + 1, 80)
+            self.progress("イメージを書き込み・照合中", track + 1, self.cylinders)
 
     def format_fat12(self, label, *, quick=False):
         metadata = blank_metadata(label)

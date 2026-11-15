@@ -1,6 +1,7 @@
 """Windows desktop interface for the ATmega328P floppy controller."""
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import queue
 import re
@@ -12,7 +13,8 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from serial.tools import list_ports
 
-from fdd_core import Cancelled, Drive, Fat12, IMAGE_SIZE, SECTORS, blank_metadata
+from fdd_core import Cancelled, DMF_IMAGE_SIZE, Drive, Fat12, IBM_XDF_IMAGE_SIZE, IMAGE_SIZE, MUSIC_GUI_MAX_HZ, SECTORS, X68_IMAGE_SIZE, blank_metadata
+from midi_playback import load_midi
 
 BG = "#edf2f8"
 WHITE = "#ffffff"
@@ -49,6 +51,7 @@ class App:
         self.root = root
         self.port = tk.StringVar()
         self.fast = tk.BooleanVar(value=True)
+        self.music_ceiling = tk.IntVar(value=MUSIC_GUI_MAX_HZ)
         self.link_label = tk.StringVar(value="")
         self.path = tk.StringVar(value="\\")
         self.disk = tk.StringVar(value="ディスク情報なし")
@@ -80,6 +83,15 @@ class App:
                                            command=lambda: self.link_label.set(""))
         self.communication.add_command(label="読み取り速度を測る", command=self.benchmark)
         menu.add_cascade(label="通信", menu=self.communication)
+        self.music = tk.Menu(menu, tearoff=False)
+        self.music.add_command(label="試奏（音階）", command=self.play_scale)
+        self.music.add_command(label="MIDIを開く…", command=self.play_midi)
+        self.music.add_command(label="音符JSONを開く…", command=self.play_file)
+        range_menu = tk.Menu(self.music, tearoff=False)
+        for title, frequency in (("標準（262 Hz）", 262), ("高音（440 Hz）", 440), ("実験（880 Hz）", 880)):
+            range_menu.add_radiobutton(label=title, value=frequency, variable=self.music_ceiling)
+        self.music.add_cascade(label="音域の上限", menu=range_menu)
+        menu.add_cascade(label="演奏", menu=self.music)
         r.configure(menu=menu)
         style = ttk.Style()
         style.theme_use("clam")
@@ -250,16 +262,19 @@ class App:
         self.portbox.configure(state="disabled" if self.busy else "readonly")
         self.communication.entryconfigure(0, state="disabled" if self.busy else "normal")
         self.communication.entryconfigure(1, state="normal" if available else "disabled")
+        for item in range(4):
+            self.music.entryconfigure(item, state="normal" if available else "disabled")
         self.stop.configure(state="normal" if self.busy else "disabled")
 
-    def start(self, label, operation, *, invalidate_on_failure=False):
+    def start(self, label, operation, *, invalidate_on_failure=False, keep_disk=True):
         if self.busy or not self.port.get():
             return
         port = self.port.get()
         fast = self.fast.get()
         self.busy = True
         self.stop_event.clear()
-        self.status.set(f"{port}  •  {label} — FDを抜かずにお待ちください")
+        message = f"{port}  •  {label}"
+        self.status.set(f"{message} — FDを抜かずにお待ちください" if keep_disk else message)
         self.progress["value"] = 0
         self.enable()
 
@@ -326,6 +341,39 @@ class App:
     def stop_work(self):
         self.stop_event.set()
         self.status.set("現在の処理が区切りに達し次第、中止します。")
+
+    def play_scale(self):
+        notes = [(frequency, 190) for frequency in (131, 147, 165, 175, 196, 220, 247, 262)]
+        ceiling = self.music_ceiling.get()
+        if ceiling >= 440:
+            notes.extend([(330, 190), (392, 190), (440, 190)])
+        if ceiling >= 880:
+            notes.extend([(523, 150), (659, 150), (784, 150), (880, 150)])
+        self.play_notes("音階の試奏", lambda: notes)
+
+    def play_midi(self):
+        name = filedialog.askopenfilename(parent=self.root, title="MIDIを開く",
+                                          filetypes=[("MIDI", "*.mid *.midi")])
+        if name:
+            path = Path(name)
+            ceiling = self.music_ceiling.get()
+            self.play_notes(path.name, lambda: load_midi(path, ceiling))
+
+    def play_file(self):
+        name = filedialog.askopenfilename(parent=self.root, title="音符JSONを開く",
+                                          filetypes=[("音符JSON", "*.json"), ("すべてのファイル", "*.*")])
+        if name:
+            path = Path(name)
+            self.play_notes(path.name, lambda: json.loads(path.read_text(encoding="utf-8-sig")))
+
+    def play_notes(self, title, load):
+        ceiling = self.music_ceiling.get()
+
+        def operation(drive):
+            drive.play_notes(load(), fit_drive_range=True, max_hz=ceiling)
+            return f"{title}の演奏が終了しました。", None, False, None
+
+        self.start(f"{title}を準備中", operation, keep_disk=False)
 
     def close(self):
         if not self.busy:
@@ -460,12 +508,18 @@ class App:
         self.start("イメージ保存", run)
 
     def restore(self):
-        path = filedialog.askopenfilename(title="復元する1.44MBイメージ", filetypes=[("フロッピーイメージ", "*.img *.ima"), ("すべて", "*.*")], parent=self.root)
+        path = filedialog.askopenfilename(title="復元するフロッピーイメージ",
+                                          filetypes=[("フロッピーイメージ", "*.img *.ima *.dmf *.xdf *.hdm *.2hd"), ("すべて", "*.*")],
+                                          parent=self.root)
         if not path:
             return
         try:
-            if Path(path).stat().st_size != IMAGE_SIZE:
-                raise ValueError("イメージは1,474,560バイトである必要があります。")
+            image_size = Path(path).stat().st_size
+            formats = {IMAGE_SIZE: "1.44 MB", DMF_IMAGE_SIZE: "DMF 1.68 MB",
+                       IBM_XDF_IMAGE_SIZE: "IBM／OS/2 XDF（1,884,160 B）",
+                       X68_IMAGE_SIZE: "X68000／PC-98標準2HD（1,261,568 B）"}
+            if image_size not in formats:
+                raise ValueError("1.44 MB、DMF、X68000／PC-98標準2HD、IBM／OS/2 XDFの生イメージを選んでください。")
         except (OSError, ValueError) as err:
             messagebox.showerror("イメージ復元", str(err), parent=self.root)
             return
@@ -478,12 +532,16 @@ class App:
         if not messagebox.askyesno(
                 "FD全体を上書き",
                 f"挿入中のFDを「{Path(path).name}」で上書きします。\n"
+                f"形式：{formats[image_size]}\n"
                 f"方式：{'初期化して復元' if choice else '初期化せず復元'}\n"
                 "既存データはすべて消えます。実行しますか？", default="no", parent=self.root):
             return
 
         def run(d):
-            d.restore_image(Path(path).read_bytes(), reformat=choice)
+            image = Path(path).read_bytes()
+            if len(image) != image_size:
+                raise ValueError("選択後にイメージのサイズが変わりました。")
+            d.restore_image(image, reformat=choice)
             return self.result("イメージを復元し、全セクターの照合に成功しました。", clear=True)
         self.start("イメージ復元", run, invalidate_on_failure=True)
 
@@ -562,6 +620,7 @@ def main():
         def report():
             try:
                 assert len(app.buttons) == 12 and app.tree.winfo_viewable()
+                assert app.music.entrycget(1, "label") == "MIDIを開く…"
                 root.geometry("890x640")
                 root.update_idletasks()
                 assert all(button.winfo_ismapped() and button.winfo_height() >= 22

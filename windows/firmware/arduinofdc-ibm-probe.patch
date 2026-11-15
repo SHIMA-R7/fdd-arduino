@@ -1,0 +1,517 @@
+--- a/ArduinoFDC.h
++++ b/ArduinoFDC.h
+@@ -22,6 +22,8 @@
+ 
+ #include "Arduino.h"
+ 
++#define ARDUINOFDC_IBM_PROBE 1
++
+ // return status for readSector/writeSector and formatDisk functions
+ #define S_OK         0  // no error
+ #define S_NOTINIT    1  // ArduinoFDC.begin() was not called
+@@ -45,7 +47,10 @@
+     DT_3_DD,     // 3.5"  double density (720 KB)
+     DT_3_HD,     // 3.5"  high density (1.44 MB)
+     DT_3_DMF,    // 3.5"  high density (DMF 1.68 MB)
+-    DT_3_X68     // X68000 and PC-98 1232 KiB (77 x 2 x 8 x 1024)
++    DT_3_X68,    // X68000 and PC-98 1232 KiB (77 x 2 x 8 x 1024)
++    DT_3_IBM_PROBE,
++    DT_3_IBM_MIXED,
++    DT_3_IBM_BOOT
+   };
+ 
+   enum DensityPinMode {
+@@ -122,6 +127,10 @@
+   //            will NOT recognize this as a valid disk
+   byte formatDisk(byte *buffer, byte fromTrack=0, byte toTrack=255, byte interleave=1);
+ 
++  byte ibmProbe(byte *buffer, byte op, byte sizeCode);
++  byte ibmAccess(byte *buffer, byte op, byte track, byte side,
++                 byte sector, int8_t &position);
++
+   // Turn the disk drive motor on. The readSector/writeSector/formatDisk 
+   // functions will turn on the motor automatically if it is not running 
+   // yet. In that case (and ONLY then) they will also turn it off when finished.
+--- a/ArduinoFDC.cpp
++++ b/ArduinoFDC.cpp
+@@ -217,7 +217,7 @@
+ };
+ 
+ 
+-static struct DriveGeometryStruct geometry[7] =
++static struct DriveGeometryStruct geometry[] =
+   {
+     {2, 40,  9,  80, 1},  // 5.25" DD (360 KB)
+     {2, 40,  9,  80, 2},  // 5.25" DD disk in HD drive (360 KB)
+@@ -225,7 +225,10 @@
+     {2, 80,  9,  80, 1},  // 3.5"  DD (720 KB)
+     {2, 80, 18, 100, 1},  // 3.5"  HD (1.44 MB)
+     {2, 80, 21,  12, 1},  // 3.5"  HD (DMF 1.68 MB)
+-    {2, 77,  8, 116, 1}   // X68000 / PC-98 1232 KiB
++    {2, 77,  8, 116, 1},  // X68000 / PC-98 1232 KiB
++    {2, 80,  1,  12, 1},  // IBM 8 KiB proof of concept
++    {2, 80,  4,  12, 1},  // IBM XDF, four mixed-size sectors
++    {2, 80, 19,  50, 1}   // IBM XDF cylinder zero
+   };
+ 
+ 
+@@ -714,16 +717,24 @@
+   byte numsec     = geometry[driveType].numSectors;
+   byte datagaplen = geometry[driveType].dataGap;
+   const bool largeSector = driveType == ArduinoFDCClass::DT_3_X68;
+-  const byte dataPages = largeSector ? 4 : 2;
++  const bool ibmProbe = driveType == ArduinoFDCClass::DT_3_IBM_PROBE;
++  const bool ibmMixed = driveType == ArduinoFDCClass::DT_3_IBM_MIXED;
++  const byte dataPages = ibmMixed ? 64 : ibmProbe ? 32 : largeSector ? 4 : 2;
++  // Match the relative order of the four head-1 sectors in fdutils xdfcopy.
++  const byte head0Sizes[] = {3, 2, 4, 6};
++  const byte head1Sizes[] = {4, 2, 3, 6};
++  const byte *mixedSizes = side ? head1Sizes : head0Sizes;
++  const bool ibmBoot = driveType == ArduinoFDCClass::DT_3_IBM_BOOT;
++  const byte recordSize = ibmMixed ? 9 : 8;
+ 
+   // pre-compute ID records
+-  memset(buffer, 0, 8*numsec);
++  memset(buffer, 0, recordSize*numsec);
+   // DMF rotates each cylinder by three sector slots.
+   i = driveType == ArduinoFDCClass::DT_3_DMF ? (track * 3) % numsec : 0;
+   byte n = 0;
+   while( n<numsec )
+     {
+-      uint16_t bi = i*8;
++      uint16_t bi = i*recordSize;
+ 
+       if( buffer[bi+3]!=0 )
+         i++;
+@@ -732,12 +743,17 @@
+           buffer[bi+0] = 0xFE;      // ID mark
+           buffer[bi+1] = track;     // cylinder number
+           buffer[bi+2] = side;      // side number
+-          buffer[bi+3] = n+1;       // sector number
+-          buffer[bi+4] = largeSector ? 3 : 2;         // sector length
++          const byte sizeCode = ibmMixed ? mixedSizes[n] : ibmProbe ? 6 : largeSector ? 3 : 2;
++          byte sector = n + 1;
++          if (ibmProbe || ibmMixed) sector = 0x80 + sizeCode;
++          if (ibmBoot && (side || n >= 8)) sector = (side ? 129 : 121) + n;
++          buffer[bi+3] = sector;
++          buffer[bi+4] = sizeCode;
+           uint16_t crc = calc_crc(buffer+bi, 5);
+           buffer[bi+5] = crc / 256; // CRC
+           buffer[bi+6] = crc & 255; // CRC
+-          buffer[bi+7] = 0x4E;      // first byte of post-data gap
++          buffer[bi+7] = 0x4E;      // first byte of post-ID gap
++          if (ibmMixed) buffer[bi+8] = 1 << (sizeCode - 1);
+ 
+           i += interleave;
+           n++;
+@@ -788,13 +804,13 @@
+      ".endm\n"
+ 
+      // initialize
+-     "          mov    r16, %0\n"         //       r16 = (2*bitlen)-1 = time for short ("01") pulse         
+-     "          add    r16, %0\n"
++     "          mov    r16, %[bitlen]\n"         //       r16 = (2*bitlen)-1 = time for short ("01") pulse
++     "          add    r16, %[bitlen]\n"
+      "          dec    r16\n"
+      "          mov    r17, r16\n"        //       r17 = (3*bitlen)-1 = time for medium ("001") pulse
+-     "          add    r17, %0\n"
++     "          add    r17, %[bitlen]\n"
+      "          mov    r18, r17\n"        //       r18 = (4*bitlen)-1 = time for long ("0001") pulse
+-     "          add    r18, %0\n"
++     "          add    r18, %[bitlen]\n"
+ 
+      // 1) ---------- 56x 0x4E (pre-index gap)
+      //
+@@ -910,7 +926,7 @@
+      "          brcs    fio1\n"          // (1/2) jump if "1"
+      // next bit is "0" => write "00"
+      "          lds     r19,  OCRL\n"    // (2)   get current OCRxAL value
+-     "          add     r19,  %0\n"      // (2)   add one-bit time
++     "          add     r19,  %[bitlen]\n"      // (2)   add one-bit time
+      "          sts     OCRL, r19\n"     // (2)   set new OCRxAL value
+      "          rjmp    fie\n"           // (2)   now even
+      // next bit is "1" => write "01"
+@@ -933,12 +949,15 @@
+      "          rjmp    fie\n"           // (2)   still even
+      // next bit is "1" => write "01"
+      "fie1:     lds     r19,  OCRL\n"    // (2)   get current OCRxAL value
+-     "          add     r19,  %0\n"      // (2)   add one-bit time
++     "          add     r19,  %[bitlen]\n"      // (2)   add one-bit time
+      "          sts     OCRL, r19\n"     // (2)   set new OCRxAL value
+      "          WRITEPULSE\n"            // (7)   wait and write pulse
+      "          sts     OCRL, r16\n"     // (2)   set up timer for "01" sequence
+      "          rjmp    fio\n"           // (2)   now odd
+      "fidone:   \n"
++     "          mov   r23, %[pages]\n"
++     "          sbrc  %[pages], 6\n"
++     "          ld    r23, Z+\n"
+ 
+      // 9) ---------- 21x 0x4E (post-ID gap)
+      //
+@@ -991,7 +1010,7 @@
+      //  S S S S S   L S  S S S S   L S    L S S S   L S   ...
+      // => SSSSLS LSSSLS
+      "          ldi   r26, 0\n"            // write 2*256+0 = 512 bytes
+-     "          mov   r27, %4\n"
++     "          mov   r27, r23\n"
+      "          WRTPS\n"                   // write short pulse
+      "          rjmp dskip\n"
+      "dloop:    WRTPL\n"                   // write long  pulse
+@@ -1006,7 +1025,11 @@
+      "          brne   dloop\n"            // loop until 0
+ 
+      // CRC after A1 A1 A1 FB and F6 fill: 2BF6 (512 B), 8CEC (1024 B).
+-     "          sbrc  %4, 2\n"
++     "          sbrc  r23, 5\n"
++     "          rjmp  ibmcrc\n"
++     "          sbrc  r23, 3\n"
++     "          rjmp  ibmcrc2k\n"
++     "          sbrc  r23, 2\n"
+      "          rjmp  x68crc\n"
+      "          WRTPM\n"                   // write medium pulse
+      "          WRTPS\n"                   // write short  pulse
+@@ -1035,10 +1058,50 @@
+      "          WRTPS\n"
+      "          WRTPM\n"
+      "          WRTPS\n"
++     "          rjmp  datacrcdone\n"
++     "ibmcrc:\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPS\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPS\n"
++     "          WRTPL\n"
++     "          WRTPS\n"
++     "          WRTPS\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPM\n"
++     "          WRTPL\n"
++     "          WRTPL\n"
++     "          WRTPM\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPS\n"
++     "          rjmp  datacrcdone\n"
++     // 2 KiB of F6 has CRC D9AE, followed by one 4E.
++     "ibmcrc2k:\n"
++     "          WRTPL\n"
++     "          WRTPS\n"
++     "          WRTPL\n"
++     "          WRTPS\n"
++     "          WRTPM\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPL\n"
++     "          WRTPL\n"
++     "          WRTPS\n"
++     "          WRTPS\n"
++     "          WRTPM\n"
++     "          WRTPM\n"
++     "          WRTPM\n"
++     "          WRTPM\n"
++     "          WRTPS\n"
++     "          WRTPS\n"
+      "datacrcdone:\n"
+ 
+      // if this was the last sector then the track is done
+-     "          dec    %1\n"              // (1)    decrement sector counter
++     "          dec    %[sectors]\n"              // (1)    decrement sector counter
+      "          breq   ftdone\n"          // (1/2)  jump if done
+ 
+      // 15) ---------- 54/102x 0x4E (post-data gap)
+@@ -1048,7 +1111,7 @@
+      // 0101010100010100 1001001001010100 1001001001010100 ...
+      //  S S S S   L S   M  M  M  M S S   ...
+      // => (MMMMSS) x datagaplen
+-     "          mov    r20, %2\n"         // (1) write "datagaplen" gap bytes
++     "          mov    r20, %[gap]\n"         // (1) write "datagaplen" gap bytes
+      "          call   wrtgap\n"          //     returns 20 cycles after final pulse was written
+      "          rjmp   secstart\n"        // (2) repeat for next sector
+ 
+@@ -1111,9 +1174,10 @@
+ 
+      "ftend:\n"
+ 
+-     :                                            // no outputs
+-     : "r"(bitlen), "r"(numsec), "r"(datagaplen), "z"(buffer), "r"(dataPages) // inputs  (z=r30/r31)
+-     : "r16", "r17", "r18", "r19", "r20", "r21", "r26", "r27"); // clobbers
++     : [sectors] "+&r"(numsec), [record] "+&z"(buffer)
++     : [bitlen] "r"(bitlen), [gap] "r"(datagaplen), [pages] "r"(dataPages)
++     : "r16", "r17", "r18", "r19", "r20", "r21", "r23", "r26", "r27", "cc");
++
+ 
+   // set WRITEGATE back to input (releases it HIGH)
+   WGPORT &= ~bit(WGBIT);
+@@ -1748,6 +1812,269 @@
+ }
+ 
+ 
++static byte read_ibm_probe_data(byte bitlen, unsigned int n)
++{
++  byte status;
++
++  // expect at least 10 bytes of 0x00 followed by three sync marks (0xA1 with one missing clock bit)
++  // Data bits :     0 0 ...0  1 0 1 0 0*0 0 1  1 0 1 0 0*0 0 1  1 0 1 0 0*0 0 1
++  // In MFM    : (0)1010...10 0100010010001001 0100010010001001 0100010010001001
++
++  asm volatile
++    (
++     // define IBM_READPULSE macro (wait for pulse)
++     // macro arguments:
++     //         length: none => just wait for pulse, don't check         ( 9 cycles)
++     //                 1    => wait for pulse and jump if NOT short  (12/14 cycles)
++     //                 2    => wait for pulse and jump if NOT medium (14/16 cycles)
++     //                 3    => wait for pulse and jump if NOT long   (12/14 cycles)
++     //         dst:    label to jump to if DIFFERENT pulse found
++     //
++     // on entry: r16 contains minimum length of medium pulse
++     //           r17 contains minimum length of long   pulse
++     //           r18 contains time of previous pulse
++     // on exit:  r18 is updated to the time of this pulse
++     //           r22 contains the pulse length in timer ticks (=processor cycles)
++     // CLOBBERS: r19
++     ".macro IBM_READPULSE length=0,dst=undefined\n"
++     "        sbis    TIFR, ICF\n"     // (1/2) skip next instruction if timer input capture seen
++     "        rjmp    .-4\n"           // (2)   wait more
++     "        lds     r19, ICRL\n"     // (2)   get time of input capture (ICR1L, lower 8 bits only)
++     "        sbi     TIFR, ICF\n "    // (2)   clear input capture flag
++     "        mov     r22, r19\n"      // (1)   calculate time since previous capture...
++     "        sub     r22, r18\n"      // (1)   ...into r22
++     "        mov     r18, r19\n"      // (1)   set r18 to time of current capture
++     "  .if \\length == 1\n"           //       waiting for short pule?
++     "        cp      r22, r16\n"      // (1)   compare r22 to min medium pulse
++     "        brlo   .+2\n"            // (1/2) skip jump if less
++     "        rjmp   \\dst\n"          // (3)   not the expected pulse => jump to dst
++     "  .else \n"
++     "    .if \\length == 2\n"         // waiting for medium pulse?
++     "        cp      r16, r22\n"      // (1)   min medium pulse < r22? => carry set if so
++     "        brcc    .+2\n"           // (1/2) skip next instruction if carry is clear
++     "        cp      r22, r17\n"      // (1)   r22 < min long pulse? => carry set if so
++     "        brcs   .+2\n"            // (1/2) skip jump if greater
++     "        rjmp   \\dst\n"          // (3)   not the expected pulse => jump to dst
++     "    .else\n"
++     "      .if \\length == 3\n"
++     "        cp      r22, r17\n"      // (1)   min long pulse < r22?
++     "        brsh   .+2\n"            // (1/2) skip jump if greater
++     "        rjmp   \\dst\n"          // (3)   not the expected pulse => jump to dst
++     "      .endif\n"
++     "    .endif\n"
++     "  .endif\n"
++     ".endm\n"
++
++     // define IBM_STOREBIT macro for storing or verifying data bit
++     // storing  data  : 5/14 cycles for "1", 4/13 cycles for "0"
++     // verifying data : 5/15 cycles for "1", 4/14 cycles for "0"
++     ".macro IBM_STOREBIT data:req,done:req\n"
++     "        lsl     r20\n"           // (1)   shift received data
++     ".if \\data != 0\n"
++     "        ori     r20, 1\n"        // (1)   store "1" bit
++     ".endif\n"
++     "        dec     r21\n"           // (1)   decrement bit counter
++     "        brne    1f\n"
++     "        sts     0xc6, r20\n"    // UDR0 at 666667 baud (one byte per 15 us)
++     "        ldi     r21, 8\n"        // (1)   re-initialize bit counter
++     "        subi    r26, 1\n"        // (1)   subtract one from byte counter
++     "        sbci    r27, 0\n"        // (1)
++     "        brmi    \\done\n"
++     "1:\n"        // (1/2) done if byte counter<0
++     ".endm\n"
++
++     // prepare for reading SYNC
++     "        mov         r16, %1\n"   // (1)   r16 = 2.5 * (MFM bit len) = minimum length of medium pulse
++     "        lsr         r16\n"       // (1)
++     "        add         r16, %1\n"   // (1)
++     "        add         r16, %1\n"   // (1)
++     "        mov         r17, r16\n"  // (1)   r17 = 3.5 * (MFM bit len) = minimum length of long pulse
++     "        add         r17, %1\n"   // (1)
++     "        ldi         %0, 0\n"     // (1)   default return status is S_OK
++     "        mov         r15, %0\n"   // (1)   initialize timer overflow counter
++     "        sbi         TIFR, TOV\n" // (2)   reset timer overflow flag
++
++     // wait for at least 80x "10" (short) pulse followed by "100" (medium) pulse
++     "ibm_ws0:    ldi         r20, 0\n"    // (1)   initialize "short pulse" counter
++     "ibm_ws1:    sbis        TIFR, TOV\n" // (1/2) skip next instruction if timer overflow occurred
++     "        rjmp        ibm_ws2\n"       // (2)   continue (no overflow)
++     "        sbi         TIFR, TOV\n" // (2)   reset timer overflow flag
++     "        dec         r15\n"       // (1)   overflow happens every 4.096ms, decrement overflow counter
++     "        brne        ibm_ws2\n"       // (1/2) continue if fewer than 256 overflows
++     "        ldi         %0, 3\n"     // (1)   no sync found in 1.048s => return status is is S_NOSYNC
++     "        rjmp        ibm_rdend\n"     // (2)   done
++     "ibm_ws2:    inc         r20\n"       // (1)   increment "short pulse" counter
++     "        IBM_READPULSE\n"             // (9)   wait for pulse
++     "        cp          r22, r16\n"  // (1)   pulse length < min medium pulse?
++     "        brlo        ibm_ws1\n"       // (1/2) repeat if so
++     "        cp          r22, r17\n"  // (1)   pulse length < min long pulse?
++     "        brsh        ibm_ws0\n"       // (1/2) restart if this was a long pulse (expecting medium)
++     "        cpi         r20, 80\n"   // (1)   did we see at least 80 short pulses?
++     "        brlo        ibm_ws0\n"       // (1/2) restart if not
++
++     // expect remaining part of first sync mark (..00010010001001)
++     "        IBM_READPULSE   3,ibm_ws0\n"     // (12)  expect long pulse (0001)
++     "        IBM_READPULSE   2,ibm_ws0\n"     // (14)  expect medium pulse (001)
++     "        IBM_READPULSE   3,ibm_ws0\n"     // (12)  expect long pulse (0001)
++     "        IBM_READPULSE   2,ibm_ws0\n"     // (14)  expect medium pulse (001)
++
++     // expect second sync mark (0100010010001001)
++     "        IBM_READPULSE   1,ibm_ws0\n"     // (12)  expect short pulse (01)
++     "        IBM_READPULSE   3,ibm_ws0\n"     // (12)  expect long pulse (0001)
++     "        IBM_READPULSE   2,ibm_ws0\n"     // (14)  expect medium pulse (001)
++     "        IBM_READPULSE   3,ibm_ws0\n"     // (12)  expect long pulse (0001)
++     "        IBM_READPULSE   2,ibm_ws0\n"     // (14)  expect medium pulse (001)
++
++     // expect third sync mark (0100010010001001)
++     "        IBM_READPULSE   1,ibm_ws0\n"     // (12)  expect short pulse (01)
++     "        IBM_READPULSE   3,ibm_ws0\n"     // (12)  expect long pulse (0001)
++     "        IBM_READPULSE   2,ibm_ws0\n"     // (14)  expect medium pulse (001)
++     "        IBM_READPULSE   3,ibm_ws0\n"     // (12)  expect long pulse (0001)
++     "        IBM_READPULSE   2,ibm_ws0\n"     // (14)  expect medium pulse (001)
++
++     // found SYNC => prepare for reading data
++     "        tst     r27\n"           // (1)   test byte count
++     "        brpl    .+2\n"           // (1/2) skip following instruction if not negative
++     "        rjmp    ibm_rdend\n"         // (2)   nothing to read (only waiting for sync) => end
++     "        ldi     r21, 8\n"        // (1)   initialize bit counter (8 bits per byte)
++
++     // odd section (previous data bit was "1", no unprocessed MFM bit)
++     // shortest path: 19 cycles, longest path: 34 cycles
++     // (longest path only happens when finishing a byte, about every 5-6 pulses)
++     "ibm_rdo:    IBM_READPULSE\n"             // (9)   wait for pulse
++     "        cp      r22, r16\n"      // (1)   pulse length >= min medium pulse?
++     "        brlo    ibm_rdos\n"          // (1/2) jump if not
++     "        cp      r22, r17\n"      // (1)   pulse length >= min long pulse?
++     "        brlo    ibm_rdom\n"          // (1/2) jump if not
++
++     // long pulse (0001) => read "01", still odd
++     "        IBM_STOREBIT 0,ibm_rddone\n"      // (4/13) store "0" bit
++     "        IBM_STOREBIT 1,ibm_rddone\n"      // (5/14) store "1" bit
++     "        rjmp    ibm_rdo\n"            // (2)    back to start (still odd)
++
++     // jump target for relative conditional jumps in IBM_STOREBIT macro
++     "ibm_rddone:  rjmp    ibm_rdend\n"
++
++     // medium pulse (001) => read "0", now even
++     "ibm_rdom:   IBM_STOREBIT 0,ibm_rddone\n"      // (4/13) store "0" bit
++     "        rjmp    ibm_rde\n"            // (2)   back to start (now even)
++
++     // short pulse (01) => read "1", still odd
++     "ibm_rdos:   IBM_STOREBIT 1,ibm_rddone\n"      // (5/14) store "1" bit
++     "        rjmp    ibm_rdo\n"            // (2)    back to start (still odd)
++
++     // even section (previous data bit was "0", previous MFM "1" bit not yet processed)
++     // shortest path: 19 cycles, longest path: 31 cycles
++     "ibm_rde:    IBM_READPULSE\n"             // (9)   wait for pulse
++     "        cp      r22, r16\n"      // (1)   pulse length >= min medium pulse?
++     "        brlo    ibm_rdes\n"          // (1/2) jump if not
++
++     // either medium pulse (1001) or long pulse (10001) => read "01"
++     // (a long pulse should never occur in this section but it may just be a
++     //  slightly too long medium pulse so count it as medium)
++     "        IBM_STOREBIT 0,ibm_rdend\n"      // (4/13) store "0" bit
++     "        IBM_STOREBIT 1,ibm_rdend\n"      // (5/14) store "1" bit
++     "        rjmp    ibm_rdo\n"           // (2)    back to start (now odd)
++
++     // short pulse (101) => read "0"
++     "ibm_rdes:   IBM_STOREBIT 0,ibm_rdend\n"      // (5/14) store "0" bit
++     "        rjmp    ibm_rde\n"           // (2)    back to start (still even)
++
++     "ibm_rddiff: ldi     %0, 8\n"         // return status is S_VERIFY (verify error)
++     "ibm_rdend:\n"
++
++     : "=&d"(status)                        // early clobber; LDI requires r16-r31
++     : "r"(bitlen), "x"(n-1)              // inputs (counter in r26:r27)
++     : "r15", "r16", "r17", "r18", "r19", "r20", "r21", "r22");  // clobbers
++
++  return status;
++}
++
++
++// Fixed scratch location: last X68000 cylinder, second side.
++extern "C" byte ibm_xdf_write_mfm(byte *buffer, unsigned int remaining);
++
++static byte write_ibm_probe_data(byte *buffer, unsigned int size)
++{
++  // The verified IBM probe header uses the normal post-ID gap. Match
++  // write_data() over the leading gap, then emit the data field on D9.
++  PORTB |= bit(PB1);
++  OCDDR |= bit(OCBIT);
++  TCCRB |= bit(WGM2);
++  TCNT = 0;
++  OCR = 352 * 16 - 256;
++  TIFR = bit(OCF);
++  while (!(TIFR & bit(OCF))) {}
++  TCCRB = 0;
++  WGPORT |= bit(WGBIT);
++  return ibm_xdf_write_mfm(buffer, size + 3);
++}
++
++byte ArduinoFDCClass::ibmProbe(byte *buffer, byte op, byte sizeCode)
++{
++  int8_t position = -1;
++  const byte result = ibmAccess(buffer, op, 76, 1, 0x80 + sizeCode, position);
++  motorOff();
++  return result;
++}
++
++byte ArduinoFDCClass::ibmAccess(byte *buffer, byte op, byte track, byte side,
++                               byte sector, int8_t &position)
++{
++  const bool format = op == 'B' || op == 'K' || op == 'I';
++  const byte sizeCode = track && !format ? sector & 0x7f : 2;
++  const unsigned int size = 128u << sizeCode;
++  motorOn();
++  driveSelect(LOW);
++  digitalWriteOC(PIN_SIDE, side ? LOW : HIGH);
++  if (position < 0) {
++    if (!step_to_track0()) {
++      driveSelect(HIGH);
++      return S_NOTRACK0;
++    }
++    position = 0;
++  }
++  if (position != track) {
++    step_tracks(DT_3_HD, int(track) - position);
++    position = track;
++  }
++  TCCRA = 0;
++  TCCRB = bit(CS0);
++  TCCRC = 0;
++  byte result;
++  if (format) {
++    const auto type = op == 'B' ? DT_3_IBM_PROBE : track ? DT_3_IBM_MIXED : DT_3_IBM_BOOT;
++    result = S_NOTREADY;
++    if (wait_index_hole()) {
++      const unsigned long start = micros();
++      if (wait_index_hole()) {
++        const unsigned long rotation = micros() - start;
++        if (rotation >= (type == DT_3_IBM_MIXED ? 198000UL : 195000UL) && rotation <= 205000UL) {
++          result = is_write_protected() ? S_READONLY :
++                   format_track(buffer, type, 16, track, side, track ? 1 : 2);
++        }
++      }
++    }
++  } else if ((op == 'V' || op == 'U') && is_write_protected()) {
++    result = S_READONLY;
++  } else {
++    noInterrupts();
++    result = wait_header(16, track, side, sector, sizeCode);
++    if (result == S_OK && (op == 'V' || op == 'U')) {
++      result = write_ibm_probe_data(buffer, size);
++    } else if (result == S_OK) {
++      result = read_ibm_probe_data(16, size + 3);
++      while (!(UCSR0A & bit(UDRE0))) {}
++    }
++    interrupts();
++  }
++  driveSelect(HIGH);
++  TCCRB = 0;
++  if (result != S_OK) position = -1;
++  return result;
++}
++
++
+ void ArduinoFDCClass::motorOn()
+ {
+   if( !motorRunning() )
